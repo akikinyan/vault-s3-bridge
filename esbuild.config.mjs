@@ -18,6 +18,11 @@ const context = await esbuild.context({
 	bundle: true,
 	// Desktop-only plugin: resolve packages to their Node.js builds (not browser builds).
 	platform: 'node',
+	// Never ship the SDK's default credential chain (environment variables, static keys,
+	// credential_process). Clients always receive explicit SSO credentials.
+	alias: {
+		'@aws-sdk/credential-provider-node': './src/aws/noDefaultCredentials.ts',
+	},
 	external: [
 		'obsidian',
 		'electron',

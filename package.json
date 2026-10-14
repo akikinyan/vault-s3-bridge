@@ -7,12 +7,14 @@
 	"private": true,
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
-		"build": "npm run typecheck && node esbuild.config.mjs production",
+		"build": "npm run typecheck && node esbuild.config.mjs production && node scripts/check-bundle.mjs",
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"version": "node version-bump.mjs && git add manifest.json versions.json"
+		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"smoke:aws": "tsx scripts/smoke-aws.ts",
+		"check:local-values": "node scripts/check-local-values.mjs"
 	},
 	"keywords": [
 		"obsidian",
@@ -24,6 +26,7 @@
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.5",
+		"@smithy/types": "4.19.0",
 		"@types/node": "^22.20.5",
 		"esbuild": "^0.28.2",
 		"eslint": "^9.39.5",
@@ -43,6 +46,7 @@
 		"@aws-sdk/credential-provider-sso": "3.973.18",
 		"@smithy/node-http-handler": "4.12.1",
 		"@smithy/shared-ini-file-loader": "4.7.2",
+		"agent-base": "9.0.0",
 		"https-proxy-agent": "9.1.0"
 	}
 }

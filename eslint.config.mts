@@ -24,7 +24,7 @@ export default defineConfig(
 			},
 			parserOptions: {
 				projectService: {
-					allowDefaultProject: ['eslint.config.mts', 'manifest.json'],
+					allowDefaultProject: ['eslint.config.mts', 'manifest.json', 'scripts/*.mjs'],
 				},
 				tsconfigRootDir: import.meta.dirname,
 				extraFileExtensions: ['.json'],
@@ -32,4 +32,13 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		// Local developer scripts and tests run in Node, not in Obsidian.
+		files: ['scripts/**', 'tests/**'],
+		rules: {
+			'obsidianmd/rule-custom-message': 'off',
+			'obsidianmd/prefer-window-timers': 'off',
+			'@typescript-eslint/unbound-method': 'off',
+		},
+	},
 );

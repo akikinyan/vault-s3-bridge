@@ -1,1 +1,41 @@
-/* Vault S3 Bridge styles */
+/* Vault S3 Bridge */
+.vault-s3-bridge-items {
+	list-style: none;
+	padding-left: 0;
+}
+
+.vault-s3-bridge-item {
+	margin-bottom: var(--size-4-2);
+}
+
+.vault-s3-bridge-item-name {
+	font-weight: var(--font-semibold);
+}
+
+.vault-s3-bridge-item-detail {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-left: var(--size-4-6);
+	word-break: break-all;
+}
+
+.vault-s3-bridge-item.is-fail .vault-s3-bridge-item-name {
+	color: var(--text-error);
+}
+
+.vault-s3-bridge-item.is-warn .vault-s3-bridge-item-name,
+.vault-s3-bridge-item.is-unverified .vault-s3-bridge-item-name {
+	color: var(--text-warning);
+}
+
+.vault-s3-bridge-aborted {
+	color: var(--text-warning);
+}
+
+.vault-s3-bridge-sso code {
+	user-select: all;
+}
+
+input.vault-s3-bridge-invalid {
+	border-color: var(--text-error);
+}
