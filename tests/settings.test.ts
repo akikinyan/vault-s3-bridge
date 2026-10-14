@@ -31,6 +31,17 @@ describe('migrateSettings', () => {
 		expect(s.language).toBe('auto');
 	});
 
+	it('keeps path-style access only together with a custom endpoint', () => {
+		const s = migrateSettings({
+			connections: [
+				{ ...base, forcePathStyle: true },
+				{ ...base, id: 'id-2', alias: 'minio', endpoint: 'https://minio.example.com', forcePathStyle: true },
+			],
+		});
+		expect(s.connections[0]?.forcePathStyle).toBeUndefined();
+		expect(s.connections[1]?.forcePathStyle).toBe(true);
+	});
+
 	it('drops publicBaseUrl from private connections', () => {
 		const s = migrateSettings({ connections: [{ ...base, publicBaseUrl: 'https://cdn.example.com' }] });
 		expect(s.connections[0]?.publicBaseUrl).toBeUndefined();

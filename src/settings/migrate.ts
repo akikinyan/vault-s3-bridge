@@ -31,7 +31,8 @@ function migrateConnection(raw: unknown): StorageConnection | undefined {
 		bucket: str(raw.bucket) ?? '',
 		region: str(raw.region) ?? '',
 		endpoint: str(raw.endpoint),
-		forcePathStyle: raw.forcePathStyle === true ? true : undefined,
+		// Path-style access applies only to a custom endpoint (S3-compatible storage).
+		forcePathStyle: raw.forcePathStyle === true && str(raw.endpoint) ? true : undefined,
 		publicBaseUrl: raw.classification === 'public' ? str(raw.publicBaseUrl) : undefined,
 	};
 }

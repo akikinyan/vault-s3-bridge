@@ -83,13 +83,22 @@ export class ConnectionEditModal extends Modal {
 			.setName(t('edit.region'))
 			.setDesc(t('edit.regionDesc'))
 			.addText((text) => text.setValue(d.region).onChange((v) => (d.region = v.trim())));
+		// Path-style access only matters for S3-compatible storage, so it is shown only with a custom endpoint.
+		let pathStyle: Setting | undefined;
 		new Setting(contentEl)
 			.setName(t('edit.endpoint'))
 			.setDesc(t('edit.endpointDesc'))
-			.addText((text) => text.setValue(d.endpoint ?? '').onChange((v) => (d.endpoint = v.trim() || undefined)));
-		new Setting(contentEl)
+			.addText((text) =>
+				text.setValue(d.endpoint ?? '').onChange((v) => {
+					d.endpoint = v.trim() || undefined;
+					pathStyle?.settingEl.toggle(d.endpoint !== undefined);
+				}),
+			);
+		pathStyle = new Setting(contentEl)
 			.setName(t('edit.pathStyle'))
+			.setDesc(t('edit.pathStyleDesc'))
 			.addToggle((toggle) => toggle.setValue(d.forcePathStyle === true).onChange((v) => (d.forcePathStyle = v || undefined)));
+		pathStyle.settingEl.toggle(d.endpoint !== undefined);
 		if (d.classification === 'public') {
 			new Setting(contentEl)
 				.setName(t('edit.publicBaseUrl'))
@@ -108,6 +117,8 @@ export class ConnectionEditModal extends Modal {
 		const next: StorageConnection = {
 			...this.draft,
 			publicBaseUrl: this.draft.classification === 'public' ? this.draft.publicBaseUrl : undefined,
+			// Hidden without a custom endpoint, so it must not stay in effect either.
+			forcePathStyle: this.draft.endpoint ? this.draft.forcePathStyle : undefined,
 		};
 		const errors = validateConnection(next, this.previous, this.others);
 		if (errors.length > 0) {
