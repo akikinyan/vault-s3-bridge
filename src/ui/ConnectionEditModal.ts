@@ -77,9 +77,11 @@ export class ConnectionEditModal extends Modal {
 
 		new Setting(contentEl)
 			.setName(t('edit.bucket'))
+			.setDesc(t('edit.bucketDesc'))
 			.addText((text) => text.setValue(d.bucket).onChange((v) => (d.bucket = v.trim())));
 		new Setting(contentEl)
 			.setName(t('edit.region'))
+			.setDesc(t('edit.regionDesc'))
 			.addText((text) => text.setValue(d.region).onChange((v) => (d.region = v.trim())));
 		new Setting(contentEl)
 			.setName(t('edit.endpoint'))
