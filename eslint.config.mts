@@ -39,6 +39,10 @@ export default defineConfig(
 			'obsidianmd/rule-custom-message': 'off',
 			'obsidianmd/prefer-window-timers': 'off',
 			'@typescript-eslint/unbound-method': 'off',
+			// Tests build DOM with plain browser APIs (happy-dom), not Obsidian's helpers.
+			'obsidianmd/prefer-instanceof': 'off',
+			'obsidianmd/no-global-this': 'off',
+			'obsidianmd/prefer-create-el': 'off',
 		},
 	},
 );

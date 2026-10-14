@@ -34,12 +34,12 @@ const connection: StorageConnection = {
 	alias: 'smoke',
 	provider: 'aws-s3',
 	classification: 'private',
-	auth: { type: 'aws-sso-profile', profile: dev.profile },
 	bucket,
 	region: dev.region,
 };
 
 const report = await runConnectionTest(connection, {
+	profile: dev.profile,
 	network: {
 		proxyUrl: option('--proxy') ?? dev.proxyUrl,
 		noProxy: option('--no-proxy') ?? dev.noProxy,

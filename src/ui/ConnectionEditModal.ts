@@ -1,32 +1,30 @@
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t, type MessageKey } from '../i18n';
-import { changesPrivateTarget, validateConnection } from '../settings/validate';
-import type { StorageConnection } from '../settings/types';
-import { confirm } from './ConfirmModal';
+import { checkEditedConnection, checkNewConnection, recordsOf } from '../settings/registry';
+import type { PluginSettings, StorageConnection } from '../settings/types';
+import { validateConnectionFields } from '../settings/validate';
 
-/** Creates or edits one connection. `onSave` is called only with a validated connection. */
+/**
+ * Creates or edits one connection. Alias, bucket and endpoint are fixed after creation;
+ * the AWS profile is stored only on this device.
+ */
 export class ConnectionEditModal extends Modal {
 	private draft: StorageConnection;
+	private profile: string | undefined;
 
 	constructor(
 		app: App,
 		private readonly previous: StorageConnection | undefined,
-		private readonly others: readonly StorageConnection[],
+		private readonly settings: PluginSettings,
 		private readonly ssoProfiles: readonly string[],
-		private readonly onSave: (connection: StorageConnection) => Promise<void>,
+		currentProfile: string | undefined,
+		private readonly onSave: (connection: StorageConnection, profile: string | undefined) => Promise<void>,
 	) {
 		super(app);
+		this.profile = currentProfile ?? ssoProfiles[0];
 		this.draft = previous
 			? structuredClone(previous)
-			: {
-					id: crypto.randomUUID(),
-					alias: '',
-					provider: 'aws-s3',
-					classification: 'private',
-					auth: { type: 'aws-sso-profile', profile: ssoProfiles[0] ?? '' },
-					bucket: '',
-					region: '',
-				};
+			: { id: crypto.randomUUID(), alias: '', provider: 'aws-s3', classification: 'private', bucket: '', region: '' };
 	}
 
 	onOpen(): void {
@@ -42,11 +40,12 @@ export class ConnectionEditModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		const d = this.draft;
+		const existing = this.previous !== undefined;
 
 		new Setting(contentEl)
 			.setName(t('edit.alias'))
-			.setDesc(t('edit.aliasDesc'))
-			.addText((text) => text.setValue(d.alias).onChange((v) => (d.alias = v.trim())));
+			.setDesc(existing ? t('edit.immutableDesc') : t('edit.aliasDesc'))
+			.addText((text) => text.setValue(d.alias).setDisabled(existing).onChange((v) => (d.alias = v.trim())));
 
 		const lockedPrivate = this.previous?.classification === 'private';
 		new Setting(contentEl)
@@ -64,41 +63,46 @@ export class ConnectionEditModal extends Modal {
 					});
 			});
 
-		const profileSetting = new Setting(contentEl).setName(t('edit.profile')).setDesc(t('edit.profileDesc'));
+		const profileSetting = new Setting(contentEl).setName(t('edit.profile')).setDesc(t('edit.profileLocalDesc'));
 		if (this.ssoProfiles.length === 0) {
 			profileSetting.setDesc(t('edit.noProfiles'));
 		} else {
 			profileSetting.addDropdown((dropdown) => {
 				for (const name of this.ssoProfiles) dropdown.addOption(name, name);
-				if (d.auth.profile && !this.ssoProfiles.includes(d.auth.profile)) dropdown.addOption(d.auth.profile, d.auth.profile);
-				dropdown.setValue(d.auth.profile).onChange((v) => (d.auth.profile = v));
+				if (this.profile && !this.ssoProfiles.includes(this.profile)) dropdown.addOption(this.profile, this.profile);
+				dropdown.setValue(this.profile ?? '').onChange((v) => (this.profile = v || undefined));
 			});
 		}
 
 		new Setting(contentEl)
 			.setName(t('edit.bucket'))
-			.setDesc(t('edit.bucketDesc'))
-			.addText((text) => text.setValue(d.bucket).onChange((v) => (d.bucket = v.trim())));
+			.setDesc(existing ? t('edit.immutableDesc') : t('edit.bucketDesc'))
+			.addText((text) => text.setValue(d.bucket).setDisabled(existing).onChange((v) => (d.bucket = v.trim())));
 		new Setting(contentEl)
 			.setName(t('edit.region'))
 			.setDesc(t('edit.regionDesc'))
 			.addText((text) => text.setValue(d.region).onChange((v) => (d.region = v.trim())));
+
 		// Path-style access only matters for S3-compatible storage, so it is shown only with a custom endpoint.
 		let pathStyle: Setting | undefined;
 		new Setting(contentEl)
 			.setName(t('edit.endpoint'))
-			.setDesc(t('edit.endpointDesc'))
+			.setDesc(existing ? t('edit.immutableDesc') : t('edit.endpointDesc'))
 			.addText((text) =>
-				text.setValue(d.endpoint ?? '').onChange((v) => {
-					d.endpoint = v.trim() || undefined;
-					pathStyle?.settingEl.toggle(d.endpoint !== undefined);
-				}),
+				text
+					.setValue(d.endpoint ?? '')
+					.setDisabled(existing)
+					.onChange((v) => {
+						d.endpoint = v.trim() || undefined;
+						pathStyle?.settingEl.toggle(d.endpoint !== undefined);
+					}),
 			);
 		pathStyle = new Setting(contentEl)
 			.setName(t('edit.pathStyle'))
 			.setDesc(t('edit.pathStyleDesc'))
 			.addToggle((toggle) => toggle.setValue(d.forcePathStyle === true).onChange((v) => (d.forcePathStyle = v || undefined)));
 		pathStyle.settingEl.toggle(d.endpoint !== undefined);
+
 		if (d.classification === 'public') {
 			new Setting(contentEl)
 				.setName(t('edit.publicBaseUrl'))
@@ -120,15 +124,15 @@ export class ConnectionEditModal extends Modal {
 			// Hidden without a custom endpoint, so it must not stay in effect either.
 			forcePathStyle: this.draft.endpoint ? this.draft.forcePathStyle : undefined,
 		};
-		const errors = validateConnection(next, this.previous, this.others);
+		const fieldErrors = validateConnectionFields(next, this.settings.connections);
+		const records = recordsOf(this.settings);
+		const ruleError = this.previous ? checkEditedConnection(records, this.previous, next) : checkNewConnection(records, next);
+		const errors: MessageKey[] = [...fieldErrors.map((e) => `error.${e}` as MessageKey), ...(ruleError ? [`error.${ruleError}` as MessageKey] : [])];
 		if (errors.length > 0) {
-			new Notice(errors.map((e) => t(`error.${e}` as MessageKey)).join('\n'));
+			new Notice(errors.map((k) => t(k)).join('\n'));
 			return;
 		}
-		if (changesPrivateTarget(next, this.previous) && !(await confirm(this.app, t('edit.confirmTarget'), t('edit.confirm')))) {
-			return;
-		}
-		await this.onSave(next);
+		await this.onSave(next, this.profile);
 		this.close();
 	}
 }

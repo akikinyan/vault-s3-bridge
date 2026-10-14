@@ -10,6 +10,26 @@ An Obsidian plugin for managing attachments on AWS S3 and S3-compatible storage.
 
 Desktop only.
 
+## Private references
+
+Images in a private bucket are referenced with the plugin's own scheme and shown inside Obsidian after authenticating with your AWS profile:
+
+```markdown
+![System diagram](s3-bridge://work/diagrams/system.png)
+![System diagram|300](s3-bridge://work/diagrams/system.png)
+```
+
+- `work` is the alias of a private storage connection. An alias always points to the same bucket: alias, bucket and endpoint cannot be changed after the connection is created.
+- Use the command **Insert reference to a private file** to create references; it encodes the object key correctly.
+- No pre-signed URL is ever written to the note. Images are downloaded on demand and kept in memory only.
+- Supported formats: PNG, JPEG, GIF, WebP. SVG is not shown yet.
+- The AWS profile is chosen per device and is not synchronised with the vault.
+- Without the plugin, the reference stays in the note as text and Obsidian shows a broken image. Obsidian cannot load the `s3-bridge:` scheme, so nothing is sent over the network.
+
+### Limits of the protection
+
+Buckets registered as private are recorded so that the plugin never uses them for public connections, even after the connection is deleted or settings are synchronised from another device. These records live in the plugin's settings file; anyone who can edit that file can remove them. Enforce access with IAM and bucket policies (for example, never grant the public upload role access to private buckets).
+
 ## What the plugin accesses
 
 - **Files**: the AWS shared config files (`~/.aws/config`, `~/.aws/credentials`) and the IAM Identity Center token cache (`~/.aws/sso/cache`), read through the AWS SDK. Nothing else outside the vault.
@@ -40,6 +60,7 @@ Maintainers can run local-only checks against a real AWS account (never in CI):
 
 ```bash
 npm run smoke:aws              # connection diagnostics using local/dev.json
+npm run smoke:preview          # fetch test images through the preview service
 npm run check:local-values     # make sure no real environment values are tracked
 ```
 

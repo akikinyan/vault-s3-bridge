@@ -26,6 +26,7 @@ export class ConnectionTestModal extends Modal {
 		app: App,
 		private readonly connection: StorageConnection,
 		private readonly network: NetworkSettings,
+		private readonly profile: string | undefined,
 	) {
 		super(app);
 	}
@@ -71,6 +72,7 @@ export class ConnectionTestModal extends Modal {
 		this.resultsEl.createEl('p', { text: t('modal.running') });
 		try {
 			const report = await runConnectionTest(this.connection, {
+				profile: this.profile,
 				network: this.network,
 				writeTest: this.writeTest,
 				signal: this.controller.signal,

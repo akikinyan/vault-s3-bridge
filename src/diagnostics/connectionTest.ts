@@ -34,6 +34,8 @@ export const defaultDeps: ConnectionTestDeps = {
 };
 
 export interface ConnectionTestOptions {
+	/** The AWS profile configured for this connection on this device. */
+	profile: string | undefined;
 	network: NetworkSettings;
 	writeTest: boolean;
 	signal?: AbortSignal;
@@ -72,9 +74,14 @@ export async function runConnectionTest(
 		skipRest('aborted');
 		return report;
 	};
-	const profile = connection.auth.profile;
+	const profile = options.profile;
 
 	// 1. Profile configuration (before any credential is resolved).
+	if (!profile) {
+		push({ id: 'profile', status: 'fail', code: 'profile-not-set' });
+		skipRest('auth-gate');
+		return report;
+	}
 	try {
 		const check = checkProfile(await deps.loadConfig(), profile);
 		if (!check.ok) {

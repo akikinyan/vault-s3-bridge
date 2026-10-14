@@ -13,7 +13,6 @@ const connection: StorageConnection = {
 	alias: 'work',
 	provider: 'aws-s3',
 	classification: 'private',
-	auth: { type: 'aws-sso-profile', profile: 'sso' },
 	bucket: 'bucket',
 	region: 'ap-northeast-1',
 };
@@ -70,11 +69,12 @@ function setup(o: Setup = {}) {
 
 const status = (report: DiagnosticReport) => Object.fromEntries(report.items.map((i) => [i.id, `${i.status}${i.code ? `:${i.code}` : ''}`]));
 const network = { timeoutMs: 1000 };
+const profile = 'sso';
 
 describe('runConnectionTest — authentication gate', () => {
 	it('runs every step on success', async () => {
 		const { deps, s3 } = setup();
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report)).toEqual({
 			profile: 'success',
 			credentials: 'success',
@@ -94,7 +94,7 @@ describe('runConnectionTest — authentication gate', () => {
 	it('rejects a non-SSO profile before resolving credentials or calling AWS', async () => {
 		const config: SharedConfig = { configFile: {}, credentialsFile: { sso: { aws_access_key_id: 'AKIAIOSFODNN7EXAMPLE', aws_secret_access_key: 'x' } } };
 		const { deps, sts, s3 } = setup({ config });
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report).profile).toBe('fail:static-keys');
 		expect(deps.resolveCredentials).not.toHaveBeenCalled();
 		expect(sts.calls).toEqual([]);
@@ -104,27 +104,27 @@ describe('runConnectionTest — authentication gate', () => {
 
 	it('offers SSO login only for SSO session problems', async () => {
 		const expired = setup({ resolve: () => Promise.reject(ssoErrors.noCache) });
-		const r1 = await runConnectionTest(connection, { network, writeTest: false }, expired.deps);
+		const r1 = await runConnectionTest(connection, { profile, network, writeTest: false }, expired.deps);
 		expect(status(r1).credentials).toBe('fail:sso-login-required');
 		expect(r1.ssoLoginCommand).toBe('aws sso login --profile sso');
 		expect(expired.s3.calls).toEqual([]);
 
 		const offline = setup({ resolve: () => Promise.reject(ssoErrors.deadProxy) });
-		const r2 = await runConnectionTest(connection, { network, writeTest: false }, offline.deps);
+		const r2 = await runConnectionTest(connection, { profile, network, writeTest: false }, offline.deps);
 		expect(status(r2).credentials).toBe('fail:network');
 		expect(r2.ssoLoginCommand).toBeUndefined();
 	});
 
 	it('stops before S3 when the resolved credentials are not temporary', async () => {
 		const { deps, s3 } = setup({ resolve: async () => ({ accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 's' }) });
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report).identity).toBe('fail:no-session-token');
 		expect(s3.calls).toEqual([]);
 	});
 
 	it('stops before S3 when the principal is an IAM user', async () => {
 		const { deps, s3 } = setup({ sts: { GetCallerIdentityCommand: ok({ Arn: 'arn:aws:iam::123456789012:user/alice' }) } });
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report).identity).toBe('fail:not-assumed-role');
 		expect(s3.calls).toEqual([]);
 		expect(status(report).put).toBe('skipped:auth-gate');
@@ -132,8 +132,19 @@ describe('runConnectionTest — authentication gate', () => {
 
 	it('stops before S3 when GetCallerIdentity fails', async () => {
 		const { deps, s3 } = setup({ sts: { GetCallerIdentityCommand: fail(serviceError('AccessDenied', 403)) } });
-		const report = await runConnectionTest(connection, { network, writeTest: false }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(status(report).identity).toBe('fail:access-denied');
+		expect(s3.calls).toEqual([]);
+	});
+});
+
+describe('runConnectionTest — device profile', () => {
+	it('fails without calling AWS when no profile is set on this device', async () => {
+		const { deps, sts, s3 } = setup();
+		const report = await runConnectionTest(connection, { profile: undefined, network, writeTest: true }, deps);
+		expect(status(report).profile).toBe('fail:profile-not-set');
+		expect(deps.resolveCredentials).not.toHaveBeenCalled();
+		expect(sts.calls).toEqual([]);
 		expect(s3.calls).toEqual([]);
 	});
 });
@@ -141,47 +152,47 @@ describe('runConnectionTest — authentication gate', () => {
 describe('runConnectionTest — S3 diagnostics', () => {
 	it('continues after HeadBucket fails, including the write test', async () => {
 		const { deps, s3 } = setup({ s3: { HeadBucketCommand: fail(serviceError('Forbidden', 403)) } });
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report).bucket).toBe('fail:access-denied');
 		expect(s3.commands()).toEqual(expect.arrayContaining(['GetPublicAccessBlockCommand', 'PutObjectCommand', 'DeleteObjectCommand']));
 	});
 
 	it('never reports Block Public Access as safe without permission to read it', async () => {
 		const { deps } = setup({ s3: { GetPublicAccessBlockCommand: fail(serviceError('AccessDenied', 403)) } });
-		const report = await runConnectionTest(connection, { network, writeTest: false }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(status(report).publicAccessBlock).toBe('unverified:access-denied');
 	});
 
 	it('warns when a private bucket has no Block Public Access configuration', async () => {
 		const { deps } = setup({ s3: { GetPublicAccessBlockCommand: fail(serviceError('NoSuchPublicAccessBlockConfiguration', 404)) } });
-		const report = await runConnectionTest(connection, { network, writeTest: false }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(status(report).publicAccessBlock).toBe('warn:not-configured');
 	});
 
 	it('warns when a private bucket has some settings disabled', async () => {
 		const partial = { PublicAccessBlockConfiguration: { ...allBlocked.PublicAccessBlockConfiguration, BlockPublicPolicy: false } };
 		const { deps } = setup({ s3: { GetPublicAccessBlockCommand: ok(partial) } });
-		const report = await runConnectionTest(connection, { network, writeTest: false }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(status(report).publicAccessBlock).toBe('warn:not-all-enabled');
 	});
 
 	it('classifies permission errors on each object operation', async () => {
 		const denied = fail(serviceError('AccessDenied', 403));
 		const { deps } = setup({ s3: { GetObjectCommand: denied, DeleteObjectCommand: denied } });
-		const report = await runConnectionTest(connection, { network, writeTest: true }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: true }, deps);
 		expect(status(report)).toMatchObject({ get: 'fail:access-denied', delete: 'fail:access-denied', cleanup: 'fail:delete-failed' });
 	});
 
 	it('skips the write test unless requested', async () => {
 		const { deps, s3 } = setup();
-		const report = await runConnectionTest(connection, { network, writeTest: false }, deps);
+		const report = await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(s3.commands()).not.toContain('PutObjectCommand');
 		expect(report.items.map((i) => i.id)).not.toContain('put');
 	});
 
 	it('releases clients and the handler after a network failure', async () => {
 		const { deps, handler, sts, s3 } = setup({ s3: { HeadBucketCommand: fail(nodeError('ECONNREFUSED')) } });
-		await runConnectionTest(connection, { network, writeTest: false }, deps);
+		await runConnectionTest(connection, { profile, network, writeTest: false }, deps);
 		expect(handler.destroy).toHaveBeenCalled();
 		expect(sts.destroyed && s3.destroyed).toBe(true);
 	});
@@ -191,7 +202,7 @@ describe('runConnectionTest — cancellation', () => {
 	it('can be cancelled while SSO credentials are being resolved', async () => {
 		const controller = new AbortController();
 		const { deps, sts, s3, handler } = setup({ resolve: () => new Promise<AwsCredentialIdentity>(() => undefined) });
-		const pending = runConnectionTest(connection, { network, writeTest: true, signal: controller.signal }, deps);
+		const pending = runConnectionTest(connection, { profile, network, writeTest: true, signal: controller.signal }, deps);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		controller.abort();
 		const report = await pending;
@@ -205,7 +216,7 @@ describe('runConnectionTest — cancellation', () => {
 	it('cleans up and reports the result when cancelled during the write test, releasing clients afterwards', async () => {
 		const controller = new AbortController();
 		const { deps, s3, events } = setup({ s3: { PutObjectCommand: hangUntilAbort() } });
-		const pending = runConnectionTest(connection, { network, writeTest: true, signal: controller.signal }, deps);
+		const pending = runConnectionTest(connection, { profile, network, writeTest: true, signal: controller.signal }, deps);
 		await vi.waitFor(() => expect(s3.commands()).toContain('PutObjectCommand'));
 		controller.abort();
 		const report = await pending;
@@ -220,7 +231,7 @@ describe('runConnectionTest — cancellation', () => {
 	it('reports a leftover object when cleanup fails after cancellation', async () => {
 		const controller = new AbortController();
 		const { deps, s3 } = setup({ s3: { PutObjectCommand: hangUntilAbort(), DeleteObjectCommand: fail(nodeError('ETIMEDOUT')) } });
-		const pending = runConnectionTest(connection, { network, writeTest: true, signal: controller.signal }, deps);
+		const pending = runConnectionTest(connection, { profile, network, writeTest: true, signal: controller.signal }, deps);
 		await vi.waitFor(() => expect(s3.commands()).toContain('PutObjectCommand'));
 		controller.abort();
 		const report = await pending;

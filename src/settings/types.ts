@@ -1,24 +1,41 @@
-export type Classification = 'private' | 'public';
+import type { TargetKey } from '../storage/target';
 
-export interface AwsSsoProfileAuth {
-	type: 'aws-sso-profile';
-	profile: string;
-}
+export type Classification = 'private' | 'public';
 
 export interface StorageConnection {
 	/** Internal, immutable identifier. */
 	id: string;
-	/** User-facing alias. Private references will point to this alias. */
+	/** Written in notes. Immutable once created. */
 	alias: string;
+	displayName?: string;
 	provider: 'aws-s3';
 	classification: Classification;
-	auth: AwsSsoProfileAuth;
+	/** Immutable once created. */
 	bucket: string;
+	/** May be corrected later; it does not identify the storage. */
 	region: string;
+	/** Immutable once created. */
 	endpoint?: string;
+	/** Only meaningful together with a custom endpoint. */
 	forcePathStyle?: boolean;
 	/** Only meaningful for public connections. */
 	publicBaseUrl?: string;
+}
+
+/** Grow-only record: an alias was assigned to a storage target. */
+export interface AliasBinding {
+	alias: string;
+	target: TargetKey;
+	classification: Classification;
+}
+
+/** Grow-only record: the user chose one target for a conflicting alias. */
+export interface AliasResolution {
+	id: string;
+	alias: string;
+	chosen: TargetKey;
+	knownTargets: TargetKey[];
+	knownResolutions: string[];
 }
 
 export interface NetworkSettings {
@@ -28,23 +45,41 @@ export interface NetworkSettings {
 	timeoutMs: number;
 }
 
+export interface PreviewSettings {
+	maxFileMB: number;
+	maxMegapixels: number;
+	cacheMB: number;
+}
+
 export type LanguageSetting = 'auto' | 'ja' | 'en';
 
 export interface PluginSettings {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	connections: StorageConnection[];
+	aliasBindings: AliasBinding[];
+	aliasResolutions: AliasResolution[];
+	privateBuckets: TargetKey[];
 	network: NetworkSettings;
+	preview: PreviewSettings;
 	language: LanguageSetting;
+	/** Fields written by newer versions are kept as-is. */
+	extra?: Record<string, unknown>;
 }
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const CONNECT_TIMEOUT_MS = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 export const CLEANUP_TIMEOUT_MS = 10_000;
 
+export const DEFAULT_PREVIEW: PreviewSettings = { maxFileMB: 20, maxMegapixels: 40, cacheMB: 100 };
+
 export const DEFAULT_SETTINGS: PluginSettings = {
 	schemaVersion: CURRENT_SCHEMA_VERSION,
 	connections: [],
+	aliasBindings: [],
+	aliasResolutions: [],
+	privateBuckets: [],
 	network: { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
+	preview: { ...DEFAULT_PREVIEW },
 	language: 'auto',
 };

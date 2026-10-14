@@ -39,3 +39,37 @@
 input.vault-s3-bridge-invalid {
 	border-color: var(--text-error);
 }
+
+/* Private previews */
+img.vault-s3-bridge-hidden {
+	display: none;
+}
+
+img.vault-s3-bridge-loading {
+	min-width: 2em;
+	min-height: 2em;
+	background-color: var(--background-modifier-hover);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-placeholder {
+	display: inline-flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	padding: var(--size-2-2) var(--size-4-2);
+	border: 1px dashed var(--text-warning);
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	max-width: 100%;
+}
+
+.vault-s3-bridge-placeholder-title {
+	font-weight: var(--font-semibold);
+	color: var(--text-warning);
+}
+
+.vault-s3-bridge-placeholder-detail {
+	color: var(--text-muted);
+	word-break: break-all;
+}

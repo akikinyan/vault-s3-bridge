@@ -4,10 +4,22 @@ import { t, type MessageKey } from '../i18n';
 import { confirm } from '../ui/ConfirmModal';
 import { ConnectionEditModal } from '../ui/ConnectionEditModal';
 import type VaultS3BridgePlugin from '../main';
+import { connectionState, resolveAlias } from './registry';
 import { validateProxyUrl } from './validate';
-import type { LanguageSetting, StorageConnection } from './types';
+import type { StorageConnection } from './types';
 
-type ControlKey = 'proxyUrl' | 'noProxy' | 'timeoutSeconds' | 'language';
+type ControlKey = 'proxyUrl' | 'noProxy' | 'timeoutSeconds' | 'language' | 'maxFileMB' | 'maxMegapixels' | 'cacheMB';
+
+const STATE_LABEL: Record<string, MessageKey> = {
+	conflict: 'settings.state.conflict',
+	superseded: 'settings.state.superseded',
+	blocked: 'settings.state.blocked',
+};
+
+/** `aws:bucket` / `s3c:host/bucket` → human readable. */
+function describeTarget(target: string): string {
+	return target.replace(/^aws:/, 'AWS S3 · ').replace(/^s3c:/, '');
+}
 
 export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	constructor(
@@ -18,7 +30,18 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem<ControlKey>[] {
-		const connections = this.plugin.settings.connections;
+		const settings = this.plugin.settings;
+		const aliases = [...new Set(settings.aliasBindings.map((b) => b.alias))].sort();
+		const conflicts = aliases.flatMap((alias) => {
+			const state = resolveAlias(settings, alias);
+			return state.kind === 'conflict' ? [{ alias, candidates: state.candidates }] : [];
+		});
+		const missing = aliases.flatMap((alias) => {
+			const state = resolveAlias(settings, alias);
+			const hasConnection = settings.connections.some((c) => c.alias === alias && connectionState(settings, c) === 'active');
+			return state.kind === 'resolved' && !hasConnection ? [{ alias, target: state.target }] : [];
+		});
+
 		return [
 			{
 				type: 'list',
@@ -26,11 +49,34 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				emptyState: t('settings.noConnections'),
 				addItem: { name: t('settings.addConnection'), action: () => void this.openEditor(undefined) },
 				onDelete: (index) => void this.deleteConnection(index),
-				items: connections.map((connection) => ({
-					name: connection.alias,
-					desc: `${connection.classification === 'private' ? t('edit.private') : t('edit.public')} · ${connection.bucket} · ${connection.region}`,
-					action: () => void this.openEditor(connection),
-				})),
+				items: settings.connections.map((connection) => this.connectionItem(connection)),
+			},
+			{
+				type: 'group',
+				heading: t('settings.conflicts'),
+				visible: conflicts.length > 0,
+				items: conflicts.flatMap(({ alias, candidates }) =>
+					candidates.map((target) => ({
+						name: `${alias} → ${describeTarget(target)}`,
+						desc: t('settings.conflictDesc'),
+						action: () => void this.resolve(alias, target),
+					})),
+				),
+			},
+			{
+				type: 'group',
+				heading: t('settings.missing'),
+				visible: missing.length > 0,
+				items: missing.map(({ alias, target }) => ({ name: `${alias} → ${describeTarget(target)}`, desc: t('settings.missingDesc') })),
+			},
+			{
+				type: 'group',
+				heading: t('settings.preview'),
+				items: [
+					{ name: t('settings.maxFileMB'), control: { type: 'number', key: 'maxFileMB', min: 1, max: 200, step: 1 } },
+					{ name: t('settings.maxMegapixels'), control: { type: 'number', key: 'maxMegapixels', min: 1, max: 500, step: 1 } },
+					{ name: t('settings.cacheMB'), desc: t('settings.cacheDesc'), control: { type: 'number', key: 'cacheMB', min: 0, max: 2000, step: 10 } },
+				],
 			},
 			{
 				type: 'group',
@@ -49,15 +95,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 							},
 						},
 					},
-					{
-						name: t('settings.noProxy'),
-						desc: t('settings.noProxyDesc'),
-						control: { type: 'text', key: 'noProxy' },
-					},
-					{
-						name: t('settings.timeout'),
-						control: { type: 'number', key: 'timeoutSeconds', min: 1, max: 300, step: 1 },
-					},
+					{ name: t('settings.noProxy'), desc: t('settings.noProxyDesc'), control: { type: 'text', key: 'noProxy' } },
+					{ name: t('settings.timeout'), control: { type: 'number', key: 'timeoutSeconds', min: 1, max: 300, step: 1 } },
 				],
 			},
 			{
@@ -66,15 +105,20 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: t('settings.language'),
-						control: {
-							type: 'dropdown',
-							key: 'language',
-							options: { auto: t('settings.languageAuto'), ja: '日本語', en: 'English' },
-						},
+						control: { type: 'dropdown', key: 'language', options: { auto: t('settings.languageAuto'), ja: '日本語', en: 'English' } },
 					},
 				],
 			},
 		];
+	}
+
+	private connectionItem(connection: StorageConnection) {
+		const state = connectionState(this.plugin.settings, connection);
+		const notes: string[] = [`${connection.classification === 'private' ? t('edit.private') : t('edit.public')} · ${connection.bucket} · ${connection.region}`];
+		const label = STATE_LABEL[state];
+		if (label) notes.push(`⚠ ${t(label)}`);
+		if (!this.plugin.profileFor(connection.id)) notes.push(`⚠ ${t('settings.state.profileNotSet')}`);
+		return { name: connection.alias, desc: notes.join(' — '), action: () => void this.openEditor(connection) };
 	}
 
 	getControlValue(key: string): unknown {
@@ -88,43 +132,76 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				return s.network.timeoutMs / 1000;
 			case 'language':
 				return s.language;
+			case 'maxFileMB':
+				return s.preview.maxFileMB;
+			case 'maxMegapixels':
+				return s.preview.maxMegapixels;
+			case 'cacheMB':
+				return s.preview.cacheMB;
 		}
 		return undefined;
 	}
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		const s = this.plugin.settings;
+		const positive = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
 		switch (key as ControlKey) {
 			case 'proxyUrl': {
 				const v = String(value).trim() || undefined;
 				if (validateProxyUrl(v)) return;
 				s.network.proxyUrl = v;
-				break;
+				await this.plugin.saveSettings();
+				this.plugin.scheduleRecreatePreview();
+				return;
 			}
 			case 'noProxy':
 				s.network.noProxy = String(value).trim() || undefined;
-				break;
+				await this.plugin.saveSettings();
+				this.plugin.scheduleRecreatePreview();
+				return;
 			case 'timeoutSeconds': {
-				const seconds = Number(value);
-				if (!Number.isFinite(seconds) || seconds <= 0) return;
+				const seconds = positive(Number(value));
+				if (!seconds) return;
 				s.network.timeoutMs = Math.round(seconds * 1000);
-				break;
+				await this.plugin.saveSettings();
+				this.plugin.scheduleRecreatePreview();
+				return;
 			}
 			case 'language':
-				s.language = value === 'ja' || value === 'en' ? value : ('auto' satisfies LanguageSetting);
+				s.language = value === 'ja' || value === 'en' ? value : 'auto';
 				await this.plugin.saveSettings();
 				this.update();
 				return;
+			case 'maxFileMB':
+			case 'maxMegapixels':
+			case 'cacheMB': {
+				const v = positive(Number(value));
+				if (v === undefined || (v === 0 && key !== 'cacheMB')) return;
+				s.preview[key as 'maxFileMB' | 'maxMegapixels' | 'cacheMB'] = v;
+				await this.plugin.saveSettings();
+				// Limits apply to the next download; only the cache budget needs enforcing now.
+				this.plugin.preview.evictUnused();
+				return;
+			}
 		}
-		await this.plugin.saveSettings();
 	}
 
 	private async deleteConnection(index: number): Promise<void> {
 		const connection = this.plugin.settings.connections[index];
 		if (!connection) return;
 		if (!(await confirm(this.app, t('edit.confirmDelete', { alias: connection.alias }), t('settings.delete')))) return;
-		this.plugin.settings.connections = this.plugin.settings.connections.filter((c) => c.id !== connection.id);
-		await this.plugin.saveSettings();
+		await this.plugin.deleteConnection(connection.id);
+		this.update();
+	}
+
+	private async resolve(alias: string, target: string): Promise<void> {
+		if (!(await confirm(this.app, `${alias} → ${describeTarget(target)}`, t('settings.resolve')))) return;
+		await this.plugin.resolveAliasConflict(alias, target);
+		for (const c of this.plugin.supersededConnections(alias)) {
+			if (await confirm(this.app, t('edit.confirmDelete', { alias: `${c.alias} (${c.bucket})` }), t('settings.delete'))) {
+				await this.plugin.deleteConnection(c.id);
+			}
+		}
 		this.update();
 	}
 
@@ -135,12 +212,9 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		} catch {
 			new Notice(t('edit.noProfiles'));
 		}
-		new ConnectionEditModal(this.app, previous, this.plugin.settings.connections, profiles, async (saved) => {
-			const list = this.plugin.settings.connections;
-			const index = list.findIndex((c) => c.id === saved.id);
-			if (index >= 0) list[index] = saved;
-			else list.push(saved);
-			await this.plugin.saveSettings();
+		const current = previous ? this.plugin.profileFor(previous.id) : undefined;
+		new ConnectionEditModal(this.app, previous, this.plugin.settings, profiles, current, async (saved, profile) => {
+			await this.plugin.saveConnection(saved, profile);
 			this.update();
 		}).open();
 	}
