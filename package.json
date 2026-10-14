@@ -31,8 +31,18 @@
 		"globals": "^17.13.0",
 		"jiti": "^2.7.0",
 		"obsidian": "^1.14.4",
+		"proxy": "^4.1.0",
+		"tsx": "^4.23.15",
 		"typescript": "~5.9",
 		"typescript-eslint": "^8.71.2",
 		"vitest": "^5.0.4"
+	},
+	"dependencies": {
+		"@aws-sdk/client-s3": "3.1151.0",
+		"@aws-sdk/client-sts": "3.1151.0",
+		"@aws-sdk/credential-provider-sso": "3.973.18",
+		"@smithy/node-http-handler": "4.12.1",
+		"@smithy/shared-ini-file-loader": "4.7.2",
+		"https-proxy-agent": "9.1.0"
 	}
 }
