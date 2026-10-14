@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+main.js
+*.map
+
+# Private / local-only (never commit)
+local/
+dev-vault/
+CLAUDE.local.md
+.env*
+data.json
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.log

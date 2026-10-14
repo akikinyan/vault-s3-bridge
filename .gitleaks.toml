@@ -1,0 +1,11 @@
+# Extends the default gitleaks rules with an allowlist of placeholder values used in docs and tests.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented placeholder values"
+regexes = [
+  '''123456789012''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+]
