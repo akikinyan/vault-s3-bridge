@@ -110,24 +110,29 @@ export function setupService(o: { settings?: PluginSettings; device?: DeviceStat
 		clock,
 		device,
 		setSettings: (s: PluginSettings) => (settings = s),
+		settingsNow: () => settings,
 		gets: () => calls.filter((c) => c.command === 'GetObjectCommand'),
 	};
 }
 
 export const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** A send implementation whose GetObject calls wait until released by the test. */
-export function controllableSend() {
+/**
+ * A send implementation whose calls wait until released by the test. With `rejectOnAbort: false`,
+ * aborting only records the signal, so the test can still deliver a late response.
+ */
+export function controllableSend({ rejectOnAbort = true }: { rejectOnAbort?: boolean } = {}) {
 	const pending: { resolve: (v: unknown) => void; reject: (e: unknown) => void; signal?: AbortSignal; key: unknown }[] = [];
 	const send: Send = (command, signal) =>
 		new Promise((resolve, reject) => {
 			const p = { resolve, reject, signal, key: command.input.Key };
 			pending.push(p);
-			signal?.addEventListener('abort', () => {
-				const e = new Error('aborted');
-				e.name = 'AbortError';
-				reject(e);
-			});
+			if (rejectOnAbort)
+				signal?.addEventListener('abort', () => {
+					const e = new Error('aborted');
+					e.name = 'AbortError';
+					reject(e);
+				});
 		});
 	return { send, pending };
 }

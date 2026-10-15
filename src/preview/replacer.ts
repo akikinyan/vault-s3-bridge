@@ -60,20 +60,21 @@ export class ImageReplacer {
 		const lease = this.source().acquire(src);
 		this.leases.set(img, lease);
 		const current = () => !lease.released && this.leases.get(img) === lease;
+		// Someone replaced the (removed) src before the observer noticed: their value wins.
+		const replaced = () => {
+			if (img.getAttribute('src') === null) return false;
+			this.process(img);
+			return true;
+		};
 		lease.result.then(
 			(image) => {
-				if (!current()) return;
-				// Someone replaced the (removed) src before the observer noticed: their value wins.
-				if (img.getAttribute('src') !== null) {
-					this.process(img);
-					return;
-				}
+				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
 				this.ownSrc.set(img, image.url);
 				img.setAttribute('src', image.url);
 			},
 			(error: unknown) => {
-				if (!current()) return;
+				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
 				if (!(error instanceof PreviewError) || error.code === 'aborted') return;
 				const placeholder = this.renderPlaceholder(error, src);

@@ -237,4 +237,31 @@ describe('ImageReplacer', () => {
 		expect(leases[1]!.src).toBe('s3-bridge://work/b.png');
 		expect(img.getAttribute('src')).toBeNull();
 	});
+
+	it('keeps an external src set right before the fetch fails, and releases the lease', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		img.setAttribute('src', 'https://example.com/x.png'); // changed before the observer ran
+		leases[0]!.reject(new PreviewError('not-found'));
+		await flush();
+		expect(img.getAttribute('src')).toBe('https://example.com/x.png');
+		expect(img.classList.contains('vault-s3-bridge-hidden')).toBe(false);
+		expect(root.querySelector('.ph')).toBeNull();
+		expect(leases[0]!.released).toBe(true);
+		expect(replacer.size).toBe(0);
+	});
+
+	it('starts over when the external src is another reference and the old fetch fails', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		img.setAttribute('src', 's3-bridge://work/b.png');
+		leases[0]!.reject(new PreviewError('not-found'));
+		await flush();
+		expect(leases[0]!.released).toBe(true);
+		expect(leases[1]!.src).toBe('s3-bridge://work/b.png');
+		expect(root.querySelector('.ph')).toBeNull();
+		leases[1]!.resolve({ url: 'blob:new', width: 1, height: 1 });
+		await flush();
+		expect(img.getAttribute('src')).toBe('blob:new');
+	});
 });

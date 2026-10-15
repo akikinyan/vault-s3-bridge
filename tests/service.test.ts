@@ -261,12 +261,34 @@ describe('PreviewService — lifecycle', () => {
 	});
 
 	it('does not report existence when the connection was invalidated while the request finished', async () => {
-		const c = controllableSend();
+		const c = controllableSend({ rejectOnAbort: false });
 		const t = setupService({ send: c.send });
 		const check = t.service.exists(REF, new AbortController().signal);
 		await tick();
 		await tick();
 		t.service.invalidateConnection('c-work');
+		c.pending[0]!.resolve({}); // the request still succeeds after the abort
+		await expect(check).rejects.toMatchObject({ code: 'aborted' });
+	});
+
+	it('does not report existence when the profile generation changed while checking', async () => {
+		const c = controllableSend({ rejectOnAbort: false });
+		const t = setupService({ send: c.send });
+		const check = t.service.exists(REF, new AbortController().signal);
+		await tick();
+		await tick();
+		setProfile(t.device, 'c-work', 'other'); // new generation, no invalidation
+		c.pending[0]!.resolve({});
+		await expect(check).rejects.toMatchObject({ code: 'aborted' });
+	});
+
+	it('does not report existence when the reference no longer resolves after the check', async () => {
+		const c = controllableSend({ rejectOnAbort: false });
+		const t = setupService({ send: c.send });
+		const check = t.service.exists(REF, new AbortController().signal);
+		await tick();
+		await tick();
+		t.setSettings({ ...t.settingsNow(), connections: [] }); // connection deleted, no invalidation
 		c.pending[0]!.resolve({});
 		await expect(check).rejects.toMatchObject({ code: 'aborted' });
 	});
