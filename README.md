@@ -33,8 +33,8 @@ Buckets registered as private are recorded so that the plugin never uses them fo
 ## What the plugin accesses
 
 - **Files**: the AWS shared config files (`~/.aws/config`, `~/.aws/credentials`) and the IAM Identity Center token cache (`~/.aws/sso/cache`), read through the AWS SDK. Nothing else outside the vault.
-- **Network**: AWS endpoints only (IAM Identity Center, STS and S3), optionally through the proxy you configure.
-- **Secrets**: none are stored by the plugin. Credentials are resolved on demand and are not cached or logged.
+- **Network**: AWS endpoints (IAM Identity Center, STS and S3) and, for connections that set one, the custom S3-compatible endpoint you configure. Requests optionally go through the proxy you configure.
+- **Secrets**: none are written to disk or logged. Temporary credentials for image previews are kept in memory per connection and dropped shortly before they expire; the connection test resolves them on each run without keeping them.
 
 ## Supported authentication (current)
 
