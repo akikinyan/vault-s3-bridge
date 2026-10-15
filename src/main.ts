@@ -1,5 +1,5 @@
 import type { NodeHttpHandler } from '@smithy/node-http-handler';
-import { getLanguage, MarkdownRenderChild, MarkdownView, Notice, Plugin } from 'obsidian';
+import { getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
 import { setLanguage, t, type MessageKey } from './i18n';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
@@ -14,7 +14,7 @@ import { VaultS3BridgeSettingTab } from './settings/SettingTab';
 import type { PluginSettings, StorageConnection } from './settings/types';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
-import { InsertReferenceModal } from './ui/InsertReferenceModal';
+import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
 
 const SWEEP_INTERVAL_MS = 30_000;
 
@@ -72,12 +72,12 @@ export default class VaultS3BridgePlugin extends Plugin {
 	}
 
 	private insertReference(): void {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!view || view.getMode() !== 'source') {
+		const target = editTarget(this.app);
+		if (!target) {
 			new Notice(t('insert.noEditor'));
 			return;
 		}
-		const modal = new InsertReferenceModal(this.app, this, view.editor, view, () => this.insertModals.delete(modal));
+		const modal = new InsertReferenceModal(this.app, this, target, () => this.insertModals.delete(modal));
 		this.insertModals.add(modal);
 		modal.open();
 	}

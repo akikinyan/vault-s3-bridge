@@ -1,4 +1,4 @@
-import { type App, type Editor, type MarkdownFileInfo, MarkdownView, Modal, Notice, Setting } from 'obsidian';
+import { type App, type Editor, MarkdownView, Modal, Notice, Setting } from 'obsidian';
 import { t, tDynamic } from '../i18n';
 import { PreviewError } from '../preview/errors';
 import { checkKey, formatReference, referenceMarkdown } from '../reference/reference';
@@ -12,6 +12,18 @@ interface Target {
 	path: string | undefined;
 	cursor: { line: number; ch: number };
 	content: string;
+}
+
+/**
+ * The editor a reference may be inserted into: a Markdown view in editing mode, or an embedded
+ * editor such as a note being edited inside a Canvas. Reading mode has no target.
+ */
+export function editTarget(app: App): { editor: Editor; path: string | undefined } | undefined {
+	const active = app.workspace.activeEditor;
+	const editor = active?.editor;
+	if (!active || !editor) return undefined;
+	if (active instanceof MarkdownView && active.getMode() !== 'source') return undefined;
+	return { editor, path: active.file?.path };
 }
 
 export function snapshot(editor: Editor, path: string | undefined): Target {
@@ -35,17 +47,14 @@ export class InsertReferenceModal extends Modal {
 	private busy = false;
 	private controller: AbortController | undefined;
 	private statusEl!: HTMLElement;
-	private readonly path: string | undefined;
 
 	constructor(
 		app: App,
 		private readonly plugin: VaultS3BridgePlugin,
-		private readonly editor: Editor,
-		view: MarkdownView | MarkdownFileInfo,
+		private readonly target: { editor: Editor; path: string | undefined },
 		private readonly onDisposed: () => void = () => undefined,
 	) {
 		super(app);
-		this.path = view.file?.path;
 	}
 
 	private usable(): StorageConnection[] {
@@ -96,7 +105,7 @@ export class InsertReferenceModal extends Modal {
 			return;
 		}
 		const markdown = referenceMarkdown(connection.alias, this.key);
-		const target = snapshot(this.editor, this.path);
+		const target = snapshot(this.target.editor, this.target.path);
 		this.busy = true;
 		this.statusEl.setText(t('insert.checking'));
 		const controller = new AbortController();
@@ -114,9 +123,9 @@ export class InsertReferenceModal extends Modal {
 		if (controller.signal.aborted) return;
 		this.controller = undefined;
 		this.close();
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (view && stillSame(target, view.editor, view.file?.path)) {
-			view.editor.replaceRange(markdown, target.cursor);
+		const now = editTarget(this.app);
+		if (now && stillSame(target, now.editor, now.path)) {
+			now.editor.replaceRange(markdown, target.cursor);
 			return;
 		}
 		// The note changed while checking: never insert into an unexpected place.
