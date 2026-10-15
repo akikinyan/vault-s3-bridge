@@ -1,5 +1,5 @@
 import type { NodeHttpHandler } from '@smithy/node-http-handler';
-import { getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
+import { getLanguage, MarkdownRenderChild, MarkdownView, Notice, Plugin } from 'obsidian';
 import { setLanguage, t, type MessageKey } from './i18n';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
@@ -66,12 +66,20 @@ export default class VaultS3BridgePlugin extends Plugin {
 		this.addCommand({
 			id: 'insert-private-reference',
 			name: t('command.insertReference'),
-			editorCallback: (editor, view) => {
-					const modal = new InsertReferenceModal(this.app, this, editor, view, () => this.insertModals.delete(modal));
-					this.insertModals.add(modal);
-					modal.open();
-				},
+			// A plain callback keeps the command listed in reading mode, where it explains what to do.
+			callback: () => this.insertReference(),
 		});
+	}
+
+	private insertReference(): void {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!view || view.getMode() !== 'source') {
+			new Notice(t('insert.noEditor'));
+			return;
+		}
+		const modal = new InsertReferenceModal(this.app, this, view.editor, view, () => this.insertModals.delete(modal));
+		this.insertModals.add(modal);
+		modal.open();
 	}
 
 	onunload(): void {

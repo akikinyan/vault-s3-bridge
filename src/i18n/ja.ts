@@ -146,7 +146,7 @@ export const ja: Record<MessageKey, string> = {
 	'insert.checking': 'ファイルがあるか確認しています…',
 	'insert.noPrivateConnections': 'この端末で使える非公開の接続がありません。',
 	'insert.invalidKey': 'このキーは参照できません。空・「.」・「..」のパス区切りや、1024 バイトを超えるキーは使えません。',
-	'insert.noEditor': '先にエディタでノートを開いてください。',
+	'insert.noEditor': 'ノートを編集モード（ライブプレビューまたはソースモード）で開いてから実行してください。',
 	'insert.changed': '確認中にノートが変更されたため、参照を挿入しませんでした。',
 	'insert.copy': '参照をコピー',
 	'insert.copied': 'コピーしました',

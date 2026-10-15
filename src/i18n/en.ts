@@ -144,7 +144,7 @@ export const en = {
 	'insert.checking': 'Checking that the file exists…',
 	'insert.noPrivateConnections': 'No usable private connection on this device.',
 	'insert.invalidKey': 'This key cannot be referenced. Empty, "." and ".." path segments and keys over 1024 bytes are not allowed.',
-	'insert.noEditor': 'Open a note in the editor first.',
+	'insert.noEditor': 'Open a note in editing view (Live Preview or Source mode) first.',
 	'insert.changed': 'The note changed while checking, so the reference was not inserted.',
 	'insert.copy': 'Copy reference',
 	'insert.copied': 'Copied',
