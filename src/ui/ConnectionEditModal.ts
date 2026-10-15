@@ -1,8 +1,6 @@
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t, type MessageKey } from '../i18n';
-import { checkEditedConnection, checkNewConnection, recordsOf } from '../settings/registry';
-import type { PluginSettings, StorageConnection } from '../settings/types';
-import { validateConnectionFields } from '../settings/validate';
+import type { StorageConnection } from '../settings/types';
 
 /**
  * Creates or edits one connection. Alias, bucket and endpoint are fixed after creation;
@@ -15,10 +13,10 @@ export class ConnectionEditModal extends Modal {
 	constructor(
 		app: App,
 		private readonly previous: StorageConnection | undefined,
-		private readonly settings: PluginSettings,
 		private readonly ssoProfiles: readonly string[],
 		currentProfile: string | undefined,
-		private readonly onSave: (connection: StorageConnection, profile: string | undefined) => Promise<void>,
+		/** Validates against the latest settings; returns error keys, or an empty list once saved. */
+		private readonly onSave: (previous: StorageConnection | undefined, connection: StorageConnection, profile: string | undefined) => Promise<MessageKey[]>,
 	) {
 		super(app);
 		this.profile = currentProfile ?? ssoProfiles[0];
@@ -124,15 +122,11 @@ export class ConnectionEditModal extends Modal {
 			// Hidden without a custom endpoint, so it must not stay in effect either.
 			forcePathStyle: this.draft.endpoint ? this.draft.forcePathStyle : undefined,
 		};
-		const fieldErrors = validateConnectionFields(next, this.settings.connections);
-		const records = recordsOf(this.settings);
-		const ruleError = this.previous ? checkEditedConnection(records, this.previous, next) : checkNewConnection(records, next);
-		const errors: MessageKey[] = [...fieldErrors.map((e) => `error.${e}` as MessageKey), ...(ruleError ? [`error.${ruleError}` as MessageKey] : [])];
+		const errors = await this.onSave(this.previous, next, this.profile);
 		if (errors.length > 0) {
 			new Notice(errors.map((k) => t(k)).join('\n'));
 			return;
 		}
-		await this.onSave(next, this.profile);
 		this.close();
 	}
 }

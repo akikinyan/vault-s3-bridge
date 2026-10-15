@@ -213,9 +213,10 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 			new Notice(t('edit.noProfiles'));
 		}
 		const current = previous ? this.plugin.profileFor(previous.id) : undefined;
-		new ConnectionEditModal(this.app, previous, this.plugin.settings, profiles, current, async (saved, profile) => {
-			await this.plugin.saveConnection(saved, profile);
+		new ConnectionEditModal(this.app, previous, profiles, current, async (prev, saved, profile) => {
+			const errors = await this.plugin.saveConnection(prev, saved, profile);
 			this.update();
+			return errors;
 		}).open();
 	}
 }

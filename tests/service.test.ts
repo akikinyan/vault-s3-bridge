@@ -62,8 +62,11 @@ describe('PreviewService — fetching', () => {
 	});
 
 	it('enforces the file size limit from ContentLength and from bytes actually read', async () => {
-		const big = setupService({ send: async () => ({ ContentLength: 21 * MB, Body: body(pngBytes(1, 1)) }) });
+		const unread = body(pngBytes(1, 1));
+		const big = setupService({ send: async () => ({ ContentLength: 21 * MB, Body: unread }) });
 		await expect(big.service.acquire(REF).result).rejects.toMatchObject({ code: 'too-large' });
+		expect(unread.destroyed).toBe(true);
+		expect(big.gets()[0]!.signal?.aborted).toBe(true);
 		const stream = body(pngBytes(1, 1, 21 * MB));
 		const lying = setupService({ send: async () => ({ ContentLength: 10, Body: stream }) });
 		await expect(lying.service.acquire(REF).result).rejects.toMatchObject({ code: 'too-large' });
@@ -137,6 +140,42 @@ describe('PreviewService — lifecycle', () => {
 		expect(t.service.stats().ready).toBe(0);
 	});
 
+	it('revokes a URL created just as the connection is invalidated', async () => {
+		let invalidate = () => {};
+		const racing = {
+			destroy() {},
+			async *[Symbol.asyncIterator]() {
+				yield pngBytes(10, 10);
+				invalidate(); // after the last chunk was checked, before the URL is created
+			},
+		};
+		const t = setupService({ send: async () => ({ Body: racing }) });
+		invalidate = () => t.service.invalidateConnection('c-work');
+		const lease = t.service.acquire(REF);
+		await expect(lease.result).rejects.toMatchObject({ code: 'aborted' });
+		await tick();
+		expect(t.urls.created).toEqual(['blob:test/1']);
+		expect(t.urls.revoked).toEqual(['blob:test/1']);
+		expect(t.service.stats().ready).toBe(0);
+	});
+
+	it('revokes a URL created just as the service is destroyed', async () => {
+		let destroy = () => {};
+		const racing = {
+			destroy() {},
+			async *[Symbol.asyncIterator]() {
+				yield pngBytes(10, 10);
+				destroy();
+			},
+		};
+		const t = setupService({ send: async () => ({ Body: racing }) });
+		destroy = () => t.service.destroy();
+		await expect(t.service.acquire(REF).result).rejects.toMatchObject({ code: 'aborted' });
+		await tick();
+		expect(t.urls.created).toHaveLength(1);
+		expect(t.urls.revoked).toEqual(t.urls.created);
+	});
+
 	it('never shows or caches a result that finishes after destroy', async () => {
 		let finish!: () => void;
 		const t = setupService({ send: () => new Promise((resolve) => (finish = () => resolve({ Body: body(pngBytes(10, 10)) }))) });
@@ -207,5 +246,53 @@ describe('PreviewService — lifecycle', () => {
 		await expect(t.service.exists(REF, new AbortController().signal)).resolves.toBe(true);
 		const missing = setupService({ send: async () => Promise.reject(serviceError('NotFound', 404)) });
 		await expect(missing.service.exists(REF, new AbortController().signal)).rejects.toMatchObject({ code: 'not-found' });
+	});
+
+	it('aborts an existence check when its connection is invalidated', async () => {
+		const c = controllableSend();
+		const t = setupService({ send: c.send });
+		const check = t.service.exists(REF, new AbortController().signal);
+		await tick();
+		await tick();
+		expect(c.pending).toHaveLength(1);
+		t.service.invalidateConnection('c-work');
+		expect(c.pending[0]!.signal?.aborted).toBe(true);
+		await expect(check).rejects.toMatchObject({ code: 'aborted' });
+	});
+
+	it('does not report existence when the connection was invalidated while the request finished', async () => {
+		const c = controllableSend();
+		const t = setupService({ send: c.send });
+		const check = t.service.exists(REF, new AbortController().signal);
+		await tick();
+		await tick();
+		t.service.invalidateConnection('c-work');
+		c.pending[0]!.resolve({});
+		await expect(check).rejects.toMatchObject({ code: 'aborted' });
+	});
+
+	it('aborts existence checks on destroy and refuses new ones', async () => {
+		const c = controllableSend();
+		const t = setupService({ send: c.send });
+		const check = t.service.exists(REF, new AbortController().signal);
+		await tick();
+		await tick();
+		t.service.destroy();
+		expect(c.pending[0]!.signal?.aborted).toBe(true);
+		await expect(check).rejects.toMatchObject({ code: 'aborted' });
+		await expect(t.service.exists(REF, new AbortController().signal)).rejects.toMatchObject({ code: 'aborted' });
+		expect(c.pending).toHaveLength(1);
+	});
+
+	it('aborts the request when the caller aborts', async () => {
+		const c = controllableSend();
+		const t = setupService({ send: c.send });
+		const caller = new AbortController();
+		const check = t.service.exists(REF, caller.signal);
+		await tick();
+		await tick();
+		caller.abort();
+		expect(c.pending[0]!.signal?.aborted).toBe(true);
+		await expect(check).rejects.toBeDefined();
 	});
 });

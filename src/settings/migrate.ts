@@ -33,6 +33,10 @@ function positive(value: unknown, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function nonNegative(value: unknown, fallback: number): number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 function migrateConnection(raw: unknown): { connection: StorageConnection; legacyProfile?: string } | undefined {
 	if (!isRecord(raw)) return undefined;
 	const id = str(raw.id);
@@ -110,7 +114,7 @@ export function loadSettings(raw: unknown, device: DeviceState): LoadResult {
 		preview: {
 			maxFileMB: positive(preview.maxFileMB, DEFAULT_PREVIEW.maxFileMB),
 			maxMegapixels: positive(preview.maxMegapixels, DEFAULT_PREVIEW.maxMegapixels),
-			cacheMB: positive(preview.cacheMB, DEFAULT_PREVIEW.cacheMB),
+			cacheMB: nonNegative(preview.cacheMB, DEFAULT_PREVIEW.cacheMB),
 		},
 		language,
 		extra: Object.keys(extra).length > 0 ? extra : undefined,

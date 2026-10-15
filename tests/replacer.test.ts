@@ -215,4 +215,26 @@ describe('ImageReplacer', () => {
 		expect(leases).toHaveLength(0);
 		expect(img.getAttribute('src')).toBe('https://example.com/x.png');
 	});
+
+	it('keeps an external src set right before the fetch result arrives, and releases the lease', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		img.setAttribute('src', 'https://example.com/x.png'); // changed before the observer ran
+		leases[0]!.resolve({ url: 'blob:old', width: 1, height: 1 });
+		await flush();
+		expect(img.getAttribute('src')).toBe('https://example.com/x.png');
+		expect(leases[0]!.released).toBe(true);
+		expect(replacer.size).toBe(0);
+	});
+
+	it('starts over when the external src is another reference', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		img.setAttribute('src', 's3-bridge://work/b.png');
+		leases[0]!.resolve({ url: 'blob:old', width: 1, height: 1 });
+		await flush();
+		expect(leases[0]!.released).toBe(true);
+		expect(leases[1]!.src).toBe('s3-bridge://work/b.png');
+		expect(img.getAttribute('src')).toBeNull();
+	});
 });

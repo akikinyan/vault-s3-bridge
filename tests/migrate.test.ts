@@ -111,3 +111,14 @@ describe('device state', () => {
 		expect(loadDeviceState(storage)).toEqual(emptyDeviceState());
 	});
 });
+
+describe('loadSettings — cache budget', () => {
+	it('keeps a cache size of 0 and falls back only for invalid values', () => {
+		const zero = loadSettings({ schemaVersion: 2, preview: { cacheMB: 0 } }, emptyDeviceState()).settings;
+		expect(zero.preview.cacheMB).toBe(0);
+		const bad = loadSettings({ schemaVersion: 2, preview: { cacheMB: -1 } }, emptyDeviceState()).settings;
+		expect(bad.preview.cacheMB).toBe(DEFAULT_SETTINGS.preview.cacheMB);
+		const reloaded = loadSettings(serializeSettings(zero), emptyDeviceState()).settings;
+		expect(reloaded.preview.cacheMB).toBe(0);
+	});
+});

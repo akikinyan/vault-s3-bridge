@@ -1,6 +1,6 @@
 import type { NodeHttpHandler } from '@smithy/node-http-handler';
 import { getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
-import { setLanguage, t } from './i18n';
+import { setLanguage, t, type MessageKey } from './i18n';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
 import { ImageReplacer } from './preview/replacer';
@@ -8,6 +8,7 @@ import type { PreviewService } from './preview/service';
 import { createPreviewStack } from './preview/stack';
 import { loadDeviceState, profileOf, saveDeviceState, setProfile, type DeviceState, type DeviceStorage } from './settings/device';
 import { loadSettings, serializeSettings } from './settings/migrate';
+import { checkConnectionSave } from './settings/connectionSave';
 import { connectionState, recordConnection, recordsOf, resolveConflict, type Records } from './settings/registry';
 import { VaultS3BridgeSettingTab } from './settings/SettingTab';
 import type { PluginSettings, StorageConnection } from './settings/types';
@@ -40,6 +41,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 	private handler!: NodeHttpHandler;
 	private replacer!: ImageReplacer;
 	private settingTab?: VaultS3BridgeSettingTab;
+	private readonly insertModals = new Set<InsertReferenceModal>();
 
 	private readonly deviceStorage: DeviceStorage = {
 		load: (key) => this.app.loadLocalStorage(key) as unknown,
@@ -64,12 +66,17 @@ export default class VaultS3BridgePlugin extends Plugin {
 		this.addCommand({
 			id: 'insert-private-reference',
 			name: t('command.insertReference'),
-			editorCallback: (editor, view) => new InsertReferenceModal(this.app, this, editor, view).open(),
+			editorCallback: (editor, view) => {
+					const modal = new InsertReferenceModal(this.app, this, editor, view, () => this.insertModals.delete(modal));
+					this.insertModals.add(modal);
+					modal.open();
+				},
 		});
 	}
 
 	onunload(): void {
 		if (this.recreateTimer !== undefined) window.clearTimeout(this.recreateTimer);
+		for (const modal of [...this.insertModals]) modal.close();
 		this.replacer.releaseAll();
 		this.preview.destroy();
 		this.handler.destroy();
@@ -109,16 +116,23 @@ export default class VaultS3BridgePlugin extends Plugin {
 		Object.assign(this.settings, records);
 	}
 
-	/** Saves a validated connection and its device-local profile. */
-	async saveConnection(connection: StorageConnection, profile: string | undefined): Promise<void> {
+	/**
+	 * Validates against the current settings (they may have been replaced by a sync since the editor opened),
+	 * then saves the connection and its device-local profile. Returns error keys instead of saving on failure.
+	 */
+	async saveConnection(previous: StorageConnection | undefined, connection: StorageConnection, profile: string | undefined): Promise<MessageKey[]> {
+		const errors = checkConnectionSave(this.settings, previous, connection);
+		if (errors.length > 0) return errors;
 		const list = this.settings.connections;
+		const records = recordsOf(this.settings);
 		const index = list.findIndex((c) => c.id === connection.id);
 		if (index >= 0) list[index] = connection;
 		else list.push(connection);
-		this.setRecords(recordConnection(recordsOf(this.settings), connection));
+		this.setRecords(recordConnection(records, connection));
 		setProfile(this.device, connection.id, profile);
 		await this.saveSettings();
 		this.refreshPreview(connection.id);
+		return [];
 	}
 
 	async deleteConnection(id: string): Promise<void> {

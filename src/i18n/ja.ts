@@ -171,5 +171,7 @@ export const ja: Record<MessageKey, string> = {
 	'error.alias-bound-elsewhere': 'このエイリアスは、すでに別のストレージに使われています。別のエイリアスを指定してください。',
 	'error.private-bucket-public': 'このバケットは非公開として登録されているため、公開の接続には使えません。',
 	'error.immutable-field': 'エイリアス・バケット・エンドポイントは変更できません。',
+	'error.connection-deleted': '接続が削除されました。この画面を閉じて、やり直してください。',
+	'error.connection-changed': '接続が他の場所（同期など）で変更されました。この画面を閉じて、もう一度編集してください。',
 	'notice.readOnly': '設定は新しい版のプラグインで保存されています。変更は保存されません。プラグインを更新してください。',
 };

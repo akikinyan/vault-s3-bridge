@@ -63,6 +63,11 @@ export class ImageReplacer {
 		lease.result.then(
 			(image) => {
 				if (!current()) return;
+				// Someone replaced the (removed) src before the observer noticed: their value wins.
+				if (img.getAttribute('src') !== null) {
+					this.process(img);
+					return;
+				}
 				img.removeClass(LOADING);
 				this.ownSrc.set(img, image.url);
 				img.setAttribute('src', image.url);

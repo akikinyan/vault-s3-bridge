@@ -169,6 +169,8 @@ export const en = {
 	'error.alias-bound-elsewhere': 'This alias was already used for different storage. Choose another alias.',
 	'error.private-bucket-public': 'This bucket is registered as private and cannot be used by a public connection.',
 	'error.immutable-field': 'Alias, bucket and endpoint cannot be changed.',
+	'error.connection-deleted': 'The connection was deleted. Close this dialog and try again.',
+	'error.connection-changed': 'The connection was changed elsewhere (for example by synchronisation). Close this dialog and edit it again.',
 	'notice.readOnly': 'Settings were saved by a newer version of the plugin. Changes are not saved; update the plugin.',
 } as const;
 

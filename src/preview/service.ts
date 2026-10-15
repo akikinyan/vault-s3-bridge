@@ -42,6 +42,13 @@ interface Resolved {
 	key: string;
 }
 
+/** An in-flight existence check. */
+interface Check {
+	connectionId: string;
+	epoch: number;
+	controller: AbortController;
+}
+
 type EntryState =
 	| { kind: 'loading'; controller: AbortController }
 	| { kind: 'ready'; image: PreviewImage; bytes: number }
@@ -95,6 +102,7 @@ export class PreviewService {
 	private readonly entries = new Map<string, Entry>();
 	private readonly epochs = new Map<string, number>();
 	private readonly limiter: Limiter;
+	private readonly checks = new Set<Check>();
 	private destroyed = false;
 
 	constructor(private readonly deps: PreviewServiceDeps) {
@@ -159,7 +167,8 @@ export class PreviewService {
 
 	private async load(entry: Entry, r: Resolved): Promise<void> {
 		if (entry.state.kind !== 'loading') return;
-		const signal = entry.state.controller.signal;
+		const controller = entry.state.controller;
+		const signal = controller.signal;
 		const settings = this.deps.settings();
 		const maxBytes = settings.preview.maxFileMB * 1024 * 1024;
 		const maxPixels = settings.preview.maxMegapixels * 1_000_000;
@@ -170,7 +179,12 @@ export class PreviewService {
 				const credentials = await this.deps.credentials.get(r.connection.id, r.generation, r.profile, r.connection.region, signal);
 				const s3 = this.deps.s3For(r.connection, credentials);
 				const response = await s3.send(new GetObjectCommand({ Bucket: r.connection.bucket, Key: r.key }), { abortSignal: signal });
-				if ((response.ContentLength ?? 0) > maxBytes) throw new PreviewError('too-large');
+				if ((response.ContentLength ?? 0) > maxBytes) {
+					// Nothing was read yet: free the connection instead of leaving the body dangling.
+					discardBody(response.Body);
+					controller.abort();
+					throw new PreviewError('too-large');
+				}
 				const bytes = await readLimited(response.Body, maxBytes, signal);
 				const info = detectImage(bytes);
 				if (info.kind === 'svg') throw new PreviewError('unsupported-svg');
@@ -237,28 +251,55 @@ export class PreviewService {
 		this.epochs.set(connectionId, (this.epochs.get(connectionId) ?? 0) + 1);
 		this.deps.credentials.invalidate(connectionId);
 		for (const entry of [...this.entries.values()]) if (entry.connectionId === connectionId) this.drop(entry);
+		for (const check of this.checks) if (check.connectionId === connectionId) check.controller.abort();
 	}
 
 	invalidateAll(): void {
-		for (const id of new Set([...this.entries.values()].map((e) => e.connectionId))) this.invalidateConnection(id);
+		const ids = new Set([...this.entries.values()].map((e) => e.connectionId));
+		for (const check of this.checks) ids.add(check.connectionId);
+		for (const id of ids) this.invalidateConnection(id);
 		this.deps.credentials.clear();
 	}
 
 	destroy(): void {
-		this.invalidateAll();
 		this.destroyed = true;
+		this.invalidateAll();
+		for (const check of this.checks) check.controller.abort();
 	}
 
-	/** Checks that an object exists (used before inserting a reference). */
+	/** Checks that an object exists (used before inserting a reference). Cancelled together with its connection. */
 	async exists(src: string, signal: AbortSignal): Promise<true> {
+		if (this.destroyed) throw new PreviewError('aborted');
 		const r = this.resolve(src);
 		if (r instanceof PreviewError) throw r;
+		const check: Check = { connectionId: r.connection.id, epoch: this.epochs.get(r.connection.id) ?? 0, controller: new AbortController() };
+		const onAbort = () => check.controller.abort();
+		if (signal.aborted) onAbort();
+		else signal.addEventListener('abort', onAbort, { once: true });
+		this.checks.add(check);
 		try {
-			const credentials = await this.deps.credentials.get(r.connection.id, r.generation, r.profile, r.connection.region, signal);
-			await this.deps.s3For(r.connection, credentials).send(new HeadObjectCommand({ Bucket: r.connection.bucket, Key: r.key }), { abortSignal: signal });
+			const credentials = await this.deps.credentials.get(r.connection.id, r.generation, r.profile, r.connection.region, check.controller.signal);
+			await this.deps
+				.s3For(r.connection, credentials)
+				.send(new HeadObjectCommand({ Bucket: r.connection.bucket, Key: r.key }), { abortSignal: check.controller.signal });
+			// The answer only counts if nothing relevant changed while it was in flight.
+			const now = this.resolve(src);
+			if (
+				this.destroyed ||
+				check.controller.signal.aborted ||
+				(this.epochs.get(check.connectionId) ?? 0) !== check.epoch ||
+				now instanceof PreviewError ||
+				now.connection.id !== r.connection.id ||
+				now.generation !== r.generation
+			) {
+				throw new PreviewError('aborted');
+			}
 			return true;
 		} catch (error) {
 			throw toPreviewError(error);
+		} finally {
+			signal.removeEventListener('abort', onAbort);
+			this.checks.delete(check);
 		}
 	}
 
@@ -273,6 +314,13 @@ export class PreviewService {
 			unusedBytes: all.reduce((s, e) => s + (e.state.kind === 'ready' && e.leases.size === 0 ? e.state.bytes : 0), 0),
 		};
 	}
+}
+
+/** Releases an unread response body (Node stream or web stream). */
+function discardBody(body: unknown): void {
+	const b = body as { destroy?: () => void; cancel?: () => unknown } | undefined;
+	if (typeof b?.destroy === 'function') b.destroy();
+	else if (typeof b?.cancel === 'function') void Promise.resolve(b.cancel()).catch(() => undefined);
 }
 
 /** Reads a body while enforcing the byte limit on what is actually received. */

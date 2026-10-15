@@ -42,6 +42,7 @@ export class InsertReferenceModal extends Modal {
 		private readonly plugin: VaultS3BridgePlugin,
 		private readonly editor: Editor,
 		view: MarkdownView | MarkdownFileInfo,
+		private readonly onDisposed: () => void = () => undefined,
 	) {
 		super(app);
 		this.path = view.file?.path;
@@ -82,6 +83,7 @@ export class InsertReferenceModal extends Modal {
 	onClose(): void {
 		// Closing the dialog while checking cancels the insertion.
 		this.controller?.abort();
+		this.onDisposed();
 		this.contentEl.empty();
 	}
 
