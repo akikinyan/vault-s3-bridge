@@ -107,6 +107,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 	}
 
 	onunload(): void {
+		this.settingTab?.flushPendingText();
 		if (this.recreateTimer !== undefined) window.clearTimeout(this.recreateTimer);
 		for (const modal of [...this.insertModals]) modal.close();
 		this.replacer.releaseAll();

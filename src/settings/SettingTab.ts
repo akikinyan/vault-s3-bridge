@@ -152,7 +152,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		return undefined;
 	}
 
-	private readonly pendingText = new Map<ControlKey, number>();
+	private readonly pendingText = new Map<ControlKey, { timer: number; value: unknown }>();
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		const k = key as ControlKey;
@@ -160,17 +160,29 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		if (k === 'proxyUrl' || k === 'noProxy') {
 			if (k === 'proxyUrl' && validateProxyUrl(String(value).trim() || undefined)) return;
 			const previous = this.pendingText.get(k);
-			if (previous !== undefined) window.clearTimeout(previous);
-			this.pendingText.set(
-				k,
-				window.setTimeout(() => {
-					this.pendingText.delete(k);
-					void this.applyControl(k, value);
-				}, TEXT_SAVE_DELAY_MS),
-			);
+			if (previous) window.clearTimeout(previous.timer);
+			const timer = window.setTimeout(() => {
+				this.pendingText.delete(k);
+				void this.applyControl(k, value);
+			}, TEXT_SAVE_DELAY_MS);
+			this.pendingText.set(k, { timer, value });
 			return;
 		}
 		await this.applyControl(k, value);
+	}
+
+	/** Saves text that is still waiting for the typing pause (the tab is closing). */
+	flushPendingText(): void {
+		for (const [key, { timer, value }] of [...this.pendingText]) {
+			window.clearTimeout(timer);
+			this.pendingText.delete(key);
+			void this.applyControl(key, value);
+		}
+	}
+
+	hide(): void {
+		this.flushPendingText();
+		super.hide();
 	}
 
 	private async applyControl(key: ControlKey, value: unknown): Promise<void> {
