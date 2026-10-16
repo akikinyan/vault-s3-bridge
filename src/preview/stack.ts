@@ -6,11 +6,12 @@ import { createRequestHandler } from '../aws/network';
 import { loadSharedConfig } from '../aws/profiles';
 import type { DeviceState } from '../settings/device';
 import { CONNECT_TIMEOUT_MS, type PluginSettings } from '../settings/types';
+import type { DeepReadonly } from '../util/deepReadonly';
 import { SharedCredentials } from './credentials';
 import { PreviewService } from './service';
 
 /** Builds the preview service with real AWS clients. Used by the plugin and by the local smoke script. */
-export function createPreviewStack(settings: () => PluginSettings, device: () => DeviceState): { service: PreviewService; handler: NodeHttpHandler } {
+export function createPreviewStack(settings: () => DeepReadonly<PluginSettings>, device: () => DeepReadonly<DeviceState>): { service: PreviewService; handler: NodeHttpHandler } {
 	const network = settings().network;
 	const handler = createRequestHandler({
 		proxyUrl: network.proxyUrl,

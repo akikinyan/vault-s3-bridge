@@ -1,4 +1,5 @@
 import type { TargetKey } from '../storage/target';
+import type { DeepReadonly } from '../util/deepReadonly';
 import type { AliasBinding, AliasResolution } from './types';
 
 /** Per-device, per-vault state. Never synced (stored with App.saveLocalStorage). */
@@ -42,7 +43,7 @@ export function loadDeviceState(storage: DeviceStorage): DeviceState {
 	return state;
 }
 
-export function saveDeviceState(storage: DeviceStorage, state: DeviceState): void {
+export function saveDeviceState(storage: DeviceStorage, state: DeepReadonly<DeviceState>): void {
 	storage.save(DEVICE_STORAGE_KEY, state);
 }
 
@@ -57,7 +58,7 @@ export function setProfile(state: DeviceState, connectionId: string, profile: st
 	state.profiles[connectionId] = { profile, generation: (current?.generation ?? 0) + 1 };
 }
 
-export function profileOf(state: DeviceState, connectionId: string): { profile: string; generation: number } | undefined {
+export function profileOf(state: DeepReadonly<DeviceState>, connectionId: string): { profile: string; generation: number } | undefined {
 	const p = state.profiles[connectionId];
 	return p && p.profile ? p : undefined;
 }

@@ -8,7 +8,11 @@ import { connectionState, resolveAlias } from './registry';
 import { validateProxyUrl } from './validate';
 import type { StorageConnection } from './types';
 
-type ControlKey = 'proxyUrl' | 'noProxy' | 'timeoutSeconds' | 'language' | 'maxFileMB' | 'maxMegapixels' | 'cacheMB';
+import type { FieldKey } from './ops';
+
+type ControlKey = FieldKey;
+
+const TEXT_SAVE_DELAY_MS = 500;
 
 const STATE_LABEL: Record<string, MessageKey> = {
 	conflict: 'settings.state.conflict',
@@ -43,6 +47,12 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		});
 
 		return [
+			{
+				type: 'group',
+				heading: t('settings.unreadable'),
+				visible: this.plugin.readOnly === 'unreadable',
+				items: [{ name: t('settings.reset'), desc: t('settings.unreadableDesc'), action: () => void this.reset() }],
+			},
 			{
 				type: 'list',
 				heading: t('settings.connections'),
@@ -142,48 +152,51 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		return undefined;
 	}
 
+	private readonly pendingText = new Map<ControlKey, number>();
+
 	async setControlValue(key: string, value: unknown): Promise<void> {
-		const s = this.plugin.settings;
-		const positive = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
-		switch (key as ControlKey) {
-			case 'proxyUrl': {
-				const v = String(value).trim() || undefined;
-				if (validateProxyUrl(v)) return;
-				s.network.proxyUrl = v;
-				await this.plugin.saveSettings();
-				this.plugin.scheduleRecreatePreview();
-				return;
-			}
+		const k = key as ControlKey;
+		// Text fields save once typing pauses: every save re-reads and rewrites data.json.
+		if (k === 'proxyUrl' || k === 'noProxy') {
+			if (k === 'proxyUrl' && validateProxyUrl(String(value).trim() || undefined)) return;
+			const previous = this.pendingText.get(k);
+			if (previous !== undefined) window.clearTimeout(previous);
+			this.pendingText.set(
+				k,
+				window.setTimeout(() => {
+					this.pendingText.delete(k);
+					void this.applyControl(k, value);
+				}, TEXT_SAVE_DELAY_MS),
+			);
+			return;
+		}
+		await this.applyControl(k, value);
+	}
+
+	private async applyControl(key: ControlKey, value: unknown): Promise<void> {
+		if (!(await this.plugin.setField(key, value))) return;
+		switch (key) {
+			case 'proxyUrl':
 			case 'noProxy':
-				s.network.noProxy = String(value).trim() || undefined;
-				await this.plugin.saveSettings();
+			case 'timeoutSeconds':
 				this.plugin.scheduleRecreatePreview();
 				return;
-			case 'timeoutSeconds': {
-				const seconds = positive(Number(value));
-				if (!seconds) return;
-				s.network.timeoutMs = Math.round(seconds * 1000);
-				await this.plugin.saveSettings();
-				this.plugin.scheduleRecreatePreview();
-				return;
-			}
 			case 'language':
-				s.language = value === 'ja' || value === 'en' ? value : 'auto';
-				await this.plugin.saveSettings();
 				this.update();
 				return;
 			case 'maxFileMB':
 			case 'maxMegapixels':
-			case 'cacheMB': {
-				const v = positive(Number(value));
-				if (v === undefined || (v === 0 && key !== 'cacheMB')) return;
-				s.preview[key as 'maxFileMB' | 'maxMegapixels' | 'cacheMB'] = v;
-				await this.plugin.saveSettings();
+			case 'cacheMB':
 				// Limits apply to the next download; only the cache budget needs enforcing now.
 				this.plugin.preview.evictUnused();
 				return;
-			}
 		}
+	}
+
+	private async reset(): Promise<void> {
+		if (!(await confirm(this.app, t('settings.confirmReset'), t('settings.reset')))) return;
+		await this.plugin.resetSettings();
+		this.update();
 	}
 
 	private async deleteConnection(index: number): Promise<void> {

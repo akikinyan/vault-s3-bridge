@@ -5,6 +5,7 @@ import { parseReference } from '../reference/reference';
 import { profileOf, type DeviceState } from '../settings/device';
 import { activeConnectionFor, connectionTarget, resolveAlias } from '../settings/registry';
 import type { PluginSettings, StorageConnection } from '../settings/types';
+import type { DeepReadonly } from '../util/deepReadonly';
 import { PreviewError, type PreviewErrorCode } from './errors';
 import { FAILURE_TTL_MS, toPreviewError, type SharedCredentials } from './credentials';
 import { detectImage } from './imageInfo';
@@ -23,8 +24,8 @@ export interface Lease {
 }
 
 export interface PreviewServiceDeps {
-	settings(): PluginSettings;
-	device(): DeviceState;
+	settings(): DeepReadonly<PluginSettings>;
+	device(): DeepReadonly<DeviceState>;
 	credentials: SharedCredentials;
 	/** Clients must share the service's request handler and are never destroyed individually. */
 	s3For(connection: StorageConnection, credentials: AwsCredentialIdentity): Pick<S3Client, 'send'>;

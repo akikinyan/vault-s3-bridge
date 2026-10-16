@@ -172,6 +172,12 @@ export const en = {
 	'error.connection-deleted': 'The connection was deleted. Close this dialog and try again.',
 	'error.connection-changed': 'The connection was changed elsewhere (for example by synchronisation). Close this dialog and edit it again.',
 	'notice.readOnly': 'Settings were saved by a newer version of the plugin. Changes are not saved; update the plugin.',
+	'notice.unreadable': 'The settings file (data.json) cannot be read. Changes are not saved. Restore it from synchronisation or a backup, or reset it in the plugin settings.',
+	'notice.saveFailed': 'Settings could not be saved. Try again.',
+	'settings.unreadable': 'Settings file cannot be read',
+	'settings.unreadableDesc': 'data.json is empty or damaged. Restoring it from synchronisation or a backup reloads it automatically. If you cannot restore it, reset it (records of private buckets are kept).',
+	'settings.reset': 'Reset and save',
+	'settings.confirmReset': 'Connections and all settings return to their defaults and are saved. Records of private buckets are kept. Continue?',
 } as const;
 
 export type MessageKey = keyof typeof en;

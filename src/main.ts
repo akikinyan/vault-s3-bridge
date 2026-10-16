@@ -6,12 +6,13 @@ import { renderPlaceholder } from './preview/placeholder';
 import { ImageReplacer } from './preview/replacer';
 import type { PreviewService } from './preview/service';
 import { createPreviewStack } from './preview/stack';
-import { loadDeviceState, profileOf, saveDeviceState, setProfile, type DeviceState, type DeviceStorage } from './settings/device';
-import { loadSettings, serializeSettings } from './settings/migrate';
-import { checkConnectionSave } from './settings/connectionSave';
-import { connectionState, recordConnection, recordsOf, resolveConflict, type Records } from './settings/registry';
+import { profileOf, type DeviceState, type DeviceStorage } from './settings/device';
+import { deleteConnectionOp, resetOp, resolveConflictOp, saveConnectionOp, setFieldOp, type FieldKey } from './settings/ops';
+import { connectionState } from './settings/registry';
 import { VaultS3BridgeSettingTab } from './settings/SettingTab';
+import { SettingsStore, type MutateResult, type ReadOnlyReason } from './settings/store';
 import type { PluginSettings, StorageConnection } from './settings/types';
+import type { DeepReadonly } from './util/deepReadonly';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
 import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
@@ -33,10 +34,10 @@ class PreviewChild extends MarkdownRenderChild {
 }
 
 export default class VaultS3BridgePlugin extends Plugin {
-	settings!: PluginSettings;
-	device!: DeviceState;
-	/** data.json was written by a newer schema version; never save over it. */
-	readOnly = false;
+	/** The only place settings are read, changed and saved. */
+	store!: SettingsStore;
+	/** Always the store's current settings (updated synchronously by the store's notification). */
+	settings!: DeepReadonly<PluginSettings>;
 	preview!: PreviewService;
 	private handler!: NodeHttpHandler;
 	private replacer!: ImageReplacer;
@@ -48,8 +49,31 @@ export default class VaultS3BridgePlugin extends Plugin {
 		save: (key, data) => this.app.saveLocalStorage(key, data),
 	};
 
+	get device(): DeepReadonly<DeviceState> {
+		return this.store.device;
+	}
+
+	/** Set when data.json was written by a newer schema or cannot be read; nothing is saved over it. */
+	get readOnly(): ReadOnlyReason | undefined {
+		return this.store.readOnly;
+	}
+
 	async onload(): Promise<void> {
-		await this.loadSettings();
+		this.store = new SettingsStore({
+			loadData: () => this.loadData() as Promise<unknown>,
+			saveData: (data) => this.saveData(data),
+			device: this.deviceStorage,
+			sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+		});
+		this.settings = this.store.current;
+		this.register(
+			this.store.subscribe(() => {
+				this.settings = this.store.current;
+				setLanguage(this.settings.language, getLanguage());
+			}),
+		);
+		await this.store.reload();
+		setLanguage(this.settings.language, getLanguage());
 		this.createPreview();
 		this.replacer = new ImageReplacer(() => this.preview, renderPlaceholder);
 
@@ -92,68 +116,49 @@ export default class VaultS3BridgePlugin extends Plugin {
 
 	// ---- settings -------------------------------------------------------------------------------
 
-	async loadSettings(): Promise<void> {
-		this.device = loadDeviceState(this.deviceStorage);
-		const result = loadSettings(await this.loadData(), this.device);
-		this.settings = result.settings;
-		this.readOnly = result.readOnly;
-		saveDeviceState(this.deviceStorage, this.device);
-		if (result.changed) await this.saveData(serializeSettings(this.settings));
-		setLanguage(this.settings.language, getLanguage());
-	}
-
-	async saveSettings(): Promise<void> {
-		setLanguage(this.settings.language, getLanguage());
-		this.device.mirror = recordsOf(this.settings);
-		saveDeviceState(this.deviceStorage, this.device);
-		if (this.readOnly) {
-			new Notice(t('notice.readOnly'));
-			return;
-		}
-		await this.saveData(serializeSettings(this.settings));
-	}
-
 	/** Called by Obsidian when data.json changed on disk (e.g. synchronisation). */
 	async onExternalSettingsChange(): Promise<void> {
-		await this.loadSettings();
+		await this.store.reload();
 		this.recreatePreview();
 		this.settingTab?.update();
 	}
 
-	private setRecords(records: Records): void {
-		Object.assign(this.settings, records);
+	/** Shows why a change was not saved (validation errors are shown by the caller instead). */
+	private noticeIfNotSaved(result: MutateResult<unknown>): boolean {
+		if (result.ok) return true;
+		if (result.reason !== 'rejected' && result.error[0]) new Notice(t(result.error[0]));
+		return false;
 	}
 
 	/**
-	 * Validates against the current settings (they may have been replaced by a sync since the editor opened),
+	 * Validates against the latest settings (a sync may have changed them since the editor opened),
 	 * then saves the connection and its device-local profile. Returns error keys instead of saving on failure.
 	 */
 	async saveConnection(previous: StorageConnection | undefined, connection: StorageConnection, profile: string | undefined): Promise<MessageKey[]> {
-		const errors = checkConnectionSave(this.settings, previous, connection);
-		if (errors.length > 0) return errors;
-		const list = this.settings.connections;
-		const records = recordsOf(this.settings);
-		const index = list.findIndex((c) => c.id === connection.id);
-		if (index >= 0) list[index] = connection;
-		else list.push(connection);
-		this.setRecords(recordConnection(records, connection));
-		setProfile(this.device, connection.id, profile);
-		await this.saveSettings();
+		const result = await this.store.mutate(saveConnectionOp(previous, connection, profile));
+		if (!result.ok) return result.error;
 		this.refreshPreview(connection.id);
 		return [];
 	}
 
 	async deleteConnection(id: string): Promise<void> {
-		this.settings.connections = this.settings.connections.filter((c) => c.id !== id);
-		delete this.device.profiles[id];
-		await this.saveSettings();
+		this.noticeIfNotSaved(await this.store.mutate(deleteConnectionOp(id)));
 		this.refreshPreview(id);
 	}
 
 	async resolveAliasConflict(alias: string, target: string): Promise<void> {
-		this.setRecords(resolveConflict(recordsOf(this.settings), alias, target, crypto.randomUUID()));
-		await this.saveSettings();
+		this.noticeIfNotSaved(await this.store.mutate(resolveConflictOp(alias, target, crypto.randomUUID())));
 		this.refreshPreview();
+	}
+
+	/** Changes one plain setting. Returns false when it was invalid or not saved. */
+	async setField(key: FieldKey, value: unknown): Promise<boolean> {
+		return this.noticeIfNotSaved(await this.store.mutate(setFieldOp(key, value)));
+	}
+
+	/** "Reset and save" while data.json cannot be read. */
+	async resetSettings(): Promise<void> {
+		if (this.noticeIfNotSaved(await this.store.mutate(resetOp(), { allowUnreadable: true }))) this.recreatePreview();
 	}
 
 	/** Connections whose alias was resolved to another target on this device. */

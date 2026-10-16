@@ -174,4 +174,10 @@ export const ja: Record<MessageKey, string> = {
 	'error.connection-deleted': '接続が削除されました。この画面を閉じて、やり直してください。',
 	'error.connection-changed': '接続が他の場所（同期など）で変更されました。この画面を閉じて、もう一度編集してください。',
 	'notice.readOnly': '設定は新しい版のプラグインで保存されています。変更は保存されません。プラグインを更新してください。',
+	'notice.unreadable': '設定ファイル（data.json）を読み込めません。変更は保存されません。同期やバックアップから復元するか、プラグイン設定で初期化してください。',
+	'notice.saveFailed': '設定を保存できませんでした。もう一度お試しください。',
+	'settings.unreadable': '設定ファイルを読み込めません',
+	'settings.unreadableDesc': 'data.json が空か、壊れています。同期やバックアップから復元すると、自動で読み込み直します。復元できない場合は初期化してください（非公開バケットの記録は残ります）。',
+	'settings.reset': '初期化して保存',
+	'settings.confirmReset': '接続とすべての設定を既定値に戻して保存します。非公開バケットの記録は残ります。よろしいですか？',
 };

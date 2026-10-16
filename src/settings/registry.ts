@@ -2,6 +2,7 @@
 // Records are grow-only sets so that synchronisation can never shrink them.
 import { isValidAlias } from '../reference/reference';
 import { targetKey, type TargetKey } from '../storage/target';
+import type { DeepReadonly } from '../util/deepReadonly';
 import type { AliasBinding, AliasResolution, Classification, PluginSettings, StorageConnection } from './types';
 
 export interface Records {
@@ -9,6 +10,10 @@ export interface Records {
 	aliasResolutions: AliasResolution[];
 	privateBuckets: TargetKey[];
 }
+
+/** Read-only view accepted by every rule below (settings are exposed read-only by the store). */
+export type RecordsView = DeepReadonly<Records>;
+type ConnectionView = DeepReadonly<StorageConnection>;
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && v !== '';
 const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -49,7 +54,7 @@ export function normalizeRecords(raw: { aliasBindings?: unknown; aliasResolution
 }
 
 /** Union of all given record sets (order-independent, deduplicated, sorted). */
-export function mergeRecords(...sets: Records[]): Records {
+export function mergeRecords(...sets: RecordsView[]): Records {
 	return normalizeRecords({
 		aliasBindings: sets.flatMap((s) => s.aliasBindings),
 		aliasResolutions: sets.flatMap((s) => s.aliasResolutions),
@@ -57,11 +62,11 @@ export function mergeRecords(...sets: Records[]): Records {
 	});
 }
 
-export function recordsEqual(a: Records, b: Records): boolean {
+export function recordsEqual(a: RecordsView, b: RecordsView): boolean {
 	return JSON.stringify(normalizeRecords(a)) === JSON.stringify(normalizeRecords(b));
 }
 
-export function connectionTarget(c: Pick<StorageConnection, 'bucket' | 'endpoint'>): TargetKey {
+export function connectionTarget(c: Pick<ConnectionView, 'bucket' | 'endpoint'>): TargetKey {
 	return targetKey(c.bucket, c.endpoint);
 }
 
@@ -70,7 +75,7 @@ export type AliasState =
 	| { kind: 'resolved'; target: TargetKey; classification: Classification }
 	| { kind: 'conflict'; candidates: TargetKey[] };
 
-export function resolveAlias(records: Records, alias: string): AliasState {
+export function resolveAlias(records: RecordsView, alias: string): AliasState {
 	const bindings = records.aliasBindings.filter((b) => b.alias === alias);
 	const candidates = [...new Set(bindings.map((b) => b.target))].sort();
 	const classify = (target: TargetKey): Classification =>
@@ -96,7 +101,7 @@ export type ConnectionState = 'active' | 'conflict' | 'superseded' | 'blocked';
  * - superseded: the alias was resolved to a different target than this connection
  * - blocked: a public connection whose target is in the private ledger
  */
-export function connectionState(records: Records, connection: StorageConnection): ConnectionState {
+export function connectionState(records: RecordsView, connection: ConnectionView): ConnectionState {
 	const target = connectionTarget(connection);
 	const alias = resolveAlias(records, connection.alias);
 	if (alias.kind === 'conflict') return 'conflict';
@@ -106,13 +111,13 @@ export function connectionState(records: Records, connection: StorageConnection)
 }
 
 /** The connection a reference with this alias may use, if any. */
-export function activeConnectionFor(settings: PluginSettings, alias: string): StorageConnection | undefined {
+export function activeConnectionFor(settings: DeepReadonly<PluginSettings>, alias: string): ConnectionView | undefined {
 	return settings.connections.find((c) => c.alias === alias && connectionState(settings, c) === 'active');
 }
 
 export type RegistryError = 'alias-conflict' | 'alias-bound-elsewhere' | 'private-bucket-public' | 'immutable-field' | 'private-to-public-forbidden';
 
-export function checkNewConnection(records: Records, next: StorageConnection): RegistryError | undefined {
+export function checkNewConnection(records: RecordsView, next: ConnectionView): RegistryError | undefined {
 	const target = connectionTarget(next);
 	const alias = resolveAlias(records, next.alias);
 	if (alias.kind === 'conflict') return 'alias-conflict';
@@ -121,7 +126,7 @@ export function checkNewConnection(records: Records, next: StorageConnection): R
 	return undefined;
 }
 
-export function checkEditedConnection(records: Records, previous: StorageConnection, next: StorageConnection): RegistryError | undefined {
+export function checkEditedConnection(records: RecordsView, previous: ConnectionView, next: ConnectionView): RegistryError | undefined {
 	if (previous.alias !== next.alias || previous.bucket !== next.bucket || (previous.endpoint ?? '') !== (next.endpoint ?? '')) {
 		return 'immutable-field';
 	}
@@ -131,7 +136,7 @@ export function checkEditedConnection(records: Records, previous: StorageConnect
 }
 
 /** Adds the binding and, for private connections, the ledger entry. Returns the new records. */
-export function recordConnection(records: Records, connection: StorageConnection): Records {
+export function recordConnection(records: RecordsView, connection: ConnectionView): Records {
 	const target = connectionTarget(connection);
 	return mergeRecords(records, {
 		aliasBindings: [{ alias: connection.alias, target, classification: connection.classification }],
@@ -141,7 +146,7 @@ export function recordConnection(records: Records, connection: StorageConnection
 }
 
 /** Records the user's choice for a conflicting alias, covering every known candidate and resolution. */
-export function resolveConflict(records: Records, alias: string, chosen: TargetKey, id: string): Records {
+export function resolveConflict(records: RecordsView, alias: string, chosen: TargetKey, id: string): Records {
 	const candidates = [...new Set(records.aliasBindings.filter((b) => b.alias === alias).map((b) => b.target))];
 	if (!candidates.includes(chosen)) throw new Error('unknown-target');
 	const known = records.aliasResolutions.filter((r) => r.alias === alias).map((r) => r.id);
@@ -152,6 +157,7 @@ export function resolveConflict(records: Records, alias: string, chosen: TargetK
 	});
 }
 
-export function recordsOf(settings: Pick<PluginSettings, 'aliasBindings' | 'aliasResolutions' | 'privateBuckets'>): Records {
-	return { aliasBindings: settings.aliasBindings, aliasResolutions: settings.aliasResolutions, privateBuckets: settings.privateBuckets };
+export function recordsOf(settings: Pick<DeepReadonly<PluginSettings>, 'aliasBindings' | 'aliasResolutions' | 'privateBuckets'>): Records {
+	// Copies, so that the result can be changed without touching the (frozen) source.
+	return normalizeRecords({ aliasBindings: settings.aliasBindings, aliasResolutions: settings.aliasResolutions, privateBuckets: settings.privateBuckets });
 }
