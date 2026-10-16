@@ -1,11 +1,12 @@
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
+import { normalizeHashes } from './history';
 import type { AliasBinding, AliasResolution } from './types';
 
 /** Per-device, per-vault state. Never synced (stored with App.saveLocalStorage). */
 export interface DeviceState {
 	profiles: Record<string, { profile: string; generation: number }>;
-	mirror: { aliasBindings: AliasBinding[]; aliasResolutions: AliasResolution[]; privateBuckets: TargetKey[] };
+	mirror: { aliasBindings: AliasBinding[]; aliasResolutions: AliasResolution[]; privateBuckets: TargetKey[]; privateFiles: string[] };
 }
 
 export const DEVICE_STORAGE_KEY = 'vault-s3-bridge:device';
@@ -16,7 +17,7 @@ export interface DeviceStorage {
 }
 
 export function emptyDeviceState(): DeviceState {
-	return { profiles: {}, mirror: { aliasBindings: [], aliasResolutions: [], privateBuckets: [] } };
+	return { profiles: {}, mirror: { aliasBindings: [], aliasResolutions: [], privateBuckets: [], privateFiles: [] } };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -39,6 +40,7 @@ export function loadDeviceState(storage: DeviceStorage): DeviceState {
 		if (Array.isArray(m.aliasBindings)) state.mirror.aliasBindings = m.aliasBindings as AliasBinding[];
 		if (Array.isArray(m.aliasResolutions)) state.mirror.aliasResolutions = m.aliasResolutions as AliasResolution[];
 		if (Array.isArray(m.privateBuckets)) state.mirror.privateBuckets = m.privateBuckets.filter((x): x is string => typeof x === 'string');
+		state.mirror.privateFiles = normalizeHashes(m.privateFiles);
 	}
 	return state;
 }

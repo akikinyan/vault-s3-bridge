@@ -2,6 +2,7 @@
 // Records are grow-only sets so that synchronisation can never shrink them.
 import { isValidAlias } from '../reference/reference';
 import { targetKey, type TargetKey } from '../storage/target';
+import { normalizeHashes } from './history';
 import type { DeepReadonly } from '../util/deepReadonly';
 import type { AliasBinding, AliasResolution, Classification, PluginSettings, StorageConnection } from './types';
 
@@ -9,6 +10,8 @@ export interface Records {
 	aliasBindings: AliasBinding[];
 	aliasResolutions: AliasResolution[];
 	privateBuckets: TargetKey[];
+	/** SHA-256 of files sent, or about to be sent, to private storage. */
+	privateFiles: string[];
 }
 
 /** Read-only view accepted by every rule below (settings are exposed read-only by the store). */
@@ -26,7 +29,7 @@ function sortedUnique<T>(items: T[], id: (t: T) => string): T[] {
 
 const bindingId = (b: AliasBinding) => `${b.alias}\u0000${b.target}\u0000${b.classification}`;
 
-export function normalizeRecords(raw: { aliasBindings?: unknown; aliasResolutions?: unknown; privateBuckets?: unknown }): Records {
+export function normalizeRecords(raw: { aliasBindings?: unknown; aliasResolutions?: unknown; privateBuckets?: unknown; privateFiles?: unknown }): Records {
 	const bindings: AliasBinding[] = [];
 	for (const b of Array.isArray(raw.aliasBindings) ? raw.aliasBindings : []) {
 		if (isRec(b) && isStr(b.alias) && isValidAlias(b.alias) && isStr(b.target) && (b.classification === 'private' || b.classification === 'public')) {
@@ -50,6 +53,7 @@ export function normalizeRecords(raw: { aliasBindings?: unknown; aliasResolution
 		aliasBindings: sortedUnique(bindings, bindingId),
 		aliasResolutions: sortedUnique(resolutions, (r) => r.id),
 		privateBuckets: sortedUnique(buckets, (b) => b),
+		privateFiles: normalizeHashes(raw.privateFiles),
 	};
 }
 
@@ -59,6 +63,7 @@ export function mergeRecords(...sets: RecordsView[]): Records {
 		aliasBindings: sets.flatMap((s) => s.aliasBindings),
 		aliasResolutions: sets.flatMap((s) => s.aliasResolutions),
 		privateBuckets: sets.flatMap((s) => s.privateBuckets),
+		privateFiles: sets.flatMap((s) => s.privateFiles),
 	});
 }
 
@@ -142,6 +147,7 @@ export function recordConnection(records: RecordsView, connection: ConnectionVie
 		aliasBindings: [{ alias: connection.alias, target, classification: connection.classification }],
 		aliasResolutions: [],
 		privateBuckets: connection.classification === 'private' ? [target] : [],
+		privateFiles: [],
 	});
 }
 
@@ -154,10 +160,16 @@ export function resolveConflict(records: RecordsView, alias: string, chosen: Tar
 		aliasBindings: [],
 		aliasResolutions: [{ id, alias, chosen, knownTargets: candidates, knownResolutions: known }],
 		privateBuckets: [],
+		privateFiles: [],
 	});
 }
 
-export function recordsOf(settings: Pick<DeepReadonly<PluginSettings>, 'aliasBindings' | 'aliasResolutions' | 'privateBuckets'>): Records {
+export function recordsOf(settings: Pick<DeepReadonly<PluginSettings>, 'aliasBindings' | 'aliasResolutions' | 'privateBuckets' | 'privateFiles'>): Records {
 	// Copies, so that the result can be changed without touching the (frozen) source.
-	return normalizeRecords({ aliasBindings: settings.aliasBindings, aliasResolutions: settings.aliasResolutions, privateBuckets: settings.privateBuckets });
+	return normalizeRecords({
+		aliasBindings: settings.aliasBindings,
+		aliasResolutions: settings.aliasResolutions,
+		privateBuckets: settings.privateBuckets,
+		privateFiles: settings.privateFiles,
+	});
 }

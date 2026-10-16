@@ -1,13 +1,18 @@
 import { isValidAlias } from '../reference/reference';
 import { setProfile, type DeviceState } from './device';
 import { mergeRecords, normalizeRecords, recordConnection, type Records } from './registry';
+import { mergeHistory } from './history';
 import {
 	CURRENT_SCHEMA_VERSION,
+	DEFAULT_HISTORY_LIMIT,
+	DEFAULT_KEY_TEMPLATE,
 	DEFAULT_PREVIEW,
 	DEFAULT_REQUEST_TIMEOUT_MS,
+	DEFAULT_UPLOAD,
 	type LanguageSetting,
 	type PluginSettings,
 	type StorageConnection,
+	type UploadSettings,
 } from './types';
 
 const KNOWN_KEYS = new Set([
@@ -16,6 +21,10 @@ const KNOWN_KEYS = new Set([
 	'aliasBindings',
 	'aliasResolutions',
 	'privateBuckets',
+	'privateFiles',
+	'history',
+	'historyLimit',
+	'upload',
 	'network',
 	'preview',
 	'language',
@@ -35,6 +44,24 @@ function positive(value: unknown, fallback: number): number {
 
 function nonNegative(value: unknown, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function between(value: unknown, min: number, max: number, fallback: number): number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
+function normalizeUpload(raw: unknown): UploadSettings {
+	const u = isRecord(raw) ? raw : {};
+	const webp = isRecord(u.webp) ? u.webp : {};
+	const folders = Array.isArray(u.excludeFolders) ? u.excludeFolders : [];
+	return {
+		defaultConnectionId: str(u.defaultConnectionId),
+		webp: { enabled: webp.enabled === true, quality: between(webp.quality, 0.5, 1, DEFAULT_UPLOAD.webp.quality) },
+		stripPrivate: u.stripPrivate === true,
+		maxFileMB: between(u.maxFileMB, 1, 100, DEFAULT_UPLOAD.maxFileMB),
+		maxJobMB: between(u.maxJobMB, 10, 1000, DEFAULT_UPLOAD.maxJobMB),
+		excludeFolders: [...new Set(folders.map(str).filter((f): f is string => f !== undefined).map((f) => f.replace(/^\/+|\/+$/g, '')))].filter((f) => f !== '').sort(),
+	};
 }
 
 function migrateConnection(raw: unknown): { connection: StorageConnection; legacyProfile?: string } | undefined {
@@ -59,6 +86,8 @@ function migrateConnection(raw: unknown): { connection: StorageConnection; legac
 			// Path-style access applies only to a custom endpoint (S3-compatible storage).
 			forcePathStyle: raw.forcePathStyle === true && endpoint ? true : undefined,
 			publicBaseUrl: classification === 'public' ? str(raw.publicBaseUrl) : undefined,
+			// v1/v2 had no template: store the default of the classification explicitly (keys stay stable later).
+			keyTemplate: str(raw.keyTemplate) ?? DEFAULT_KEY_TEMPLATE[classification],
 		},
 		legacyProfile: auth && auth.type === 'aws-sso-profile' ? str(auth.profile) : undefined,
 	};
@@ -117,6 +146,9 @@ export function loadSettings(raw: unknown, device: DeviceState): LoadResult {
 			cacheMB: nonNegative(preview.cacheMB, DEFAULT_PREVIEW.cacheMB),
 		},
 		language,
+		history: mergeHistory(data.history),
+		historyLimit: Math.round(between(data.historyLimit, 100, 20000, DEFAULT_HISTORY_LIMIT)),
+		upload: normalizeUpload(data.upload),
 		extra: Object.keys(extra).length > 0 ? extra : undefined,
 	};
 	const changed = !readOnly && stableStringify(serializeSettings(settings)) !== stableStringify(raw ?? {});

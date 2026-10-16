@@ -13,7 +13,7 @@ import {
 import type { StorageConnection } from '../src/settings/types';
 import { validateConnectionFields, validateProxyUrl } from '../src/settings/validate';
 
-const empty: Records = { aliasBindings: [], aliasResolutions: [], privateBuckets: [] };
+const empty: Records = { aliasBindings: [], aliasResolutions: [], privateBuckets: [], privateFiles: [] };
 const conn = (o: Partial<StorageConnection> = {}): StorageConnection => ({
 	id: 'id-' + (o.alias ?? 'work') + (o.bucket ?? 'x'),
 	alias: 'work',
@@ -21,6 +21,7 @@ const conn = (o: Partial<StorageConnection> = {}): StorageConnection => ({
 	classification: 'private',
 	bucket: 'x',
 	region: 'ap-northeast-1',
+	keyTemplate: 'k/{hash}.{ext}',
 	...o,
 });
 const X = conn({ bucket: 'x' });

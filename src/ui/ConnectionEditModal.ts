@@ -1,6 +1,6 @@
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t, type MessageKey } from '../i18n';
-import type { StorageConnection } from '../settings/types';
+import { DEFAULT_KEY_TEMPLATE, type StorageConnection } from '../settings/types';
 
 /**
  * Creates or edits one connection. Alias, bucket and endpoint are fixed after creation;
@@ -22,7 +22,7 @@ export class ConnectionEditModal extends Modal {
 		this.profile = currentProfile ?? ssoProfiles[0];
 		this.draft = previous
 			? structuredClone(previous)
-			: { id: crypto.randomUUID(), alias: '', provider: 'aws-s3', classification: 'private', bucket: '', region: '' };
+			: { id: crypto.randomUUID(), alias: '', provider: 'aws-s3', classification: 'private', bucket: '', region: '', keyTemplate: DEFAULT_KEY_TEMPLATE.private };
 	}
 
 	onOpen(): void {
@@ -121,6 +121,8 @@ export class ConnectionEditModal extends Modal {
 			publicBaseUrl: this.draft.classification === 'public' ? this.draft.publicBaseUrl : undefined,
 			// Hidden without a custom endpoint, so it must not stay in effect either.
 			forcePathStyle: this.draft.endpoint ? this.draft.forcePathStyle : undefined,
+			// A new connection starts from the default of its classification; existing ones keep theirs.
+			keyTemplate: this.previous ? this.draft.keyTemplate : DEFAULT_KEY_TEMPLATE[this.draft.classification],
 		};
 		const errors = await this.onSave(this.previous, next, this.profile);
 		if (errors.length > 0) {

@@ -4,6 +4,7 @@
 import type { MessageKey } from '../i18n';
 import { cloneData, deepFreeze, type DeepReadonly } from '../util/deepReadonly';
 import { type DeviceState, type DeviceStorage, loadDeviceState, saveDeviceState } from './device';
+import { mergeHistory, normalizeHashes, privateHashesOf, trimHistory } from './history';
 import { loadSettings, serializeSettings, stableStringify } from './migrate';
 import { mergeRecords, normalizeRecords, recordsOf, type Records } from './registry';
 import { DEFAULT_SETTINGS, type PluginSettings } from './types';
@@ -16,6 +17,18 @@ export interface StoreIO {
 	saveData(data: Record<string, unknown>): Promise<void>;
 	device: DeviceStorage;
 	sleep(ms: number): Promise<void>;
+	/** private-files.json beside data.json (written atomically). Omitted in tests that do not need it. */
+	privateFilesBackup?: {
+		/** Parsed JSON, or undefined when missing or damaged (never throws for those). */
+		read(): Promise<unknown>;
+		write(hashes: readonly string[]): Promise<void>;
+	};
+}
+
+/** Imports the hashes of private (or reclassified) history entries, then trims the history. Order matters. */
+function finalizeRecords(s: PluginSettings): PluginSettings {
+	const privateFiles = normalizeHashes([...s.privateFiles, ...privateHashesOf(s.history, s.privateBuckets)]);
+	return { ...s, privateFiles, history: trimHistory(s.history, s.historyLimit) };
 }
 
 export interface OpContext {
@@ -120,6 +133,28 @@ export class SettingsStore {
 		return this.io.loadData();
 	}
 
+	private async readBackup(): Promise<string[]> {
+		try {
+			const raw = await this.io.privateFilesBackup?.read();
+			return typeof raw === 'object' && raw !== null ? normalizeHashes((raw as { privateFiles?: unknown }).privateFiles) : [];
+		} catch {
+			return [];
+		}
+	}
+
+	/** Writes private-files.json only when its content would change. A failure leaves data.json authoritative. */
+	private async writeBackup(current: readonly string[], next: readonly string[]): Promise<void> {
+		if (!this.io.privateFilesBackup || JSON.stringify(current) === JSON.stringify(next)) return;
+		try {
+			await this.io.privateFilesBackup.write(next);
+		} catch {
+			this.backupFailed = true;
+		}
+	}
+
+	/** Set when private-files.json could not be written (data.json still holds the records). */
+	backupFailed = false;
+
 	private async pass(
 		req: { kind: 'reload' } | { kind: 'checkpoint' } | { kind: 'mutate'; op: Op<unknown>; allowUnreadable: boolean },
 	): Promise<{ mutate?: MutateResult<unknown> }> {
@@ -131,9 +166,18 @@ export class SettingsStore {
 		const reason: ReadOnlyReason | undefined = unreadable ? 'unreadable' : loaded?.readOnly ? 'future-version' : undefined;
 		const ordinary: PluginSettings = loaded ? loaded.settings : (cloneData(this.settings) as PluginSettings);
 
-		// 4. Union of the grow-only records (disk, memory, device mirror).
-		const records: Records = mergeRecords(recordsOf(ordinary), recordsOf(this.settings), normalizeRecords(device.mirror));
-		let next: PluginSettings = { ...ordinary, ...records };
+		// 4. Union of the grow-only records (disk, memory, device mirror, private-files.json). Not trimmed yet.
+		const backup = normalizeHashes(await this.readBackup());
+		const records: Records = mergeRecords(
+			recordsOf(ordinary),
+			recordsOf(this.settings),
+			normalizeRecords(device.mirror),
+			normalizeRecords({ privateFiles: backup }),
+		);
+		const history = mergeHistory(ordinary.history, this.settings.history);
+		// The operation sees the untrimmed history; 6–7 (import, then trim) always run after it.
+		const base: PluginSettings = { ...ordinary, ...records, history };
+		let next: PluginSettings = finalizeRecords(base);
 		let nextDevice = device;
 
 		// 5–8. Apply the operation to the latest state, then persist.
@@ -147,14 +191,18 @@ export class SettingsStore {
 			} else if (reason && !resetting) {
 				mutate = { ok: false, error: [reason === 'unreadable' ? 'notice.unreadable' : 'notice.readOnly'], reason: 'read-only' };
 			} else {
-				const draft = cloneData(next);
+				const draft = cloneData(base);
 				const draftDevice = cloneData(device);
 				const result = req.op(draft, { device: draftDevice });
 				if (!result.ok) {
 					mutate = { ok: false, error: result.error, reason: 'rejected' };
 				} else {
-					// Records only grow, whatever the operation did.
-					const candidate: PluginSettings = { ...draft, ...mergeRecords(records, recordsOf(draft)) };
+					// Records only grow, whatever the operation did. 6–7 run after the operation (reclassification).
+					const candidate: PluginSettings = finalizeRecords({
+						...draft,
+						...mergeRecords(records, recordsOf(draft)),
+						history: mergeHistory(history, draft.history),
+					});
 					const out = serializeSettings(candidate);
 					let persisted: 'written' | 'unchanged' | undefined;
 					if (!unreadable && raw !== null && stableStringify(out) === stableStringify(raw)) persisted = 'unchanged';
@@ -170,10 +218,11 @@ export class SettingsStore {
 						next = candidate;
 						nextDevice = draftDevice;
 						clearReadOnly = resetting;
+						await this.writeBackup(backup, next.privateFiles);
 						mutate = { ok: true, value: result.value, persisted, generation: 0 };
 					} else {
 						// Not saved: drop the ordinary changes but keep every record the operation added.
-						next = { ...next, ...recordsOf(candidate) };
+						next = { ...next, ...recordsOf(candidate), history: candidate.history };
 						mutate = { ok: false, error: ['notice.saveFailed'], reason: 'save-failed' };
 					}
 				}
@@ -182,6 +231,7 @@ export class SettingsStore {
 			// Migration write-back of readable data (never over unreadable or newer data).
 			try {
 				await this.io.saveData(serializeSettings(next));
+				await this.writeBackup(backup, next.privateFiles);
 			} catch {
 				// Kept in memory; the next save writes it.
 			}

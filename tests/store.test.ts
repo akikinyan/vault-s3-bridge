@@ -4,8 +4,8 @@ import { deleteConnectionOp, resetOp, saveConnectionOp, setFieldOp } from '../sr
 import { SettingsStore, type StoreChange, type StoreIO } from '../src/settings/store';
 import type { StorageConnection } from '../src/settings/types';
 
-const priv: StorageConnection = { id: 'c1', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: 'x', region: 'ap-northeast-1' };
-const pub: StorageConnection = { id: 'c2', alias: 'blog', provider: 'aws-s3', classification: 'public', bucket: 'p', region: 'ap-northeast-1' };
+const priv: StorageConnection = { id: 'c1', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: 'x', region: 'ap-northeast-1', keyTemplate: 'k/{hash}.{ext}' };
+const pub: StorageConnection = { id: 'c2', alias: 'blog', provider: 'aws-s3', classification: 'public', bucket: 'p', region: 'ap-northeast-1', keyTemplate: 'k/{hash}.{ext}' };
 
 /** In-memory data.json and localStorage. `disk === undefined` means unreadable, `null` means missing. */
 class FakeIO implements StoreIO {
@@ -46,7 +46,7 @@ describe('SettingsStore — reading', () => {
 		const io = new FakeIO();
 		io.disk = { schemaVersion: 1, connections: [{ ...priv, auth: { type: 'aws-sso-profile', profile: 'sso-a' } }] };
 		const store = await storeWith(io);
-		expect(store.current.schemaVersion).toBe(2);
+		expect(store.current.schemaVersion).toBe(3);
 		expect(store.current.privateBuckets).toEqual(['aws:x']);
 		expect(store.device.profiles.c1?.profile).toBe('sso-a');
 		expect(io.saves).toHaveLength(1);

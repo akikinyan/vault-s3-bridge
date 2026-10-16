@@ -15,6 +15,7 @@ const connection: StorageConnection = {
 	classification: 'private',
 	bucket: 'bucket',
 	region: 'ap-northeast-1',
+	keyTemplate: 'k/{hash}.{ext}',
 };
 
 const ssoConfig: SharedConfig = {

@@ -38,7 +38,7 @@ describe('loadSettings — v1 to v2', () => {
 		expect(settings.aliasBindings.map((b) => b.alias)).toEqual(['blog', 'work']);
 		// Delete the migrated private connection without editing it, then try to publish its bucket.
 		settings.connections = settings.connections.filter((c) => c.id !== 'c1');
-		const reuse = { id: 'n', alias: 'other', provider: 'aws-s3' as const, classification: 'public' as const, bucket: 'x', region: 'ap-northeast-1' };
+		const reuse = { id: 'n', alias: 'other', provider: 'aws-s3' as const, classification: 'public' as const, bucket: 'x', region: 'ap-northeast-1', keyTemplate: 'k' };
 		expect(checkNewConnection(recordsOf(settings), reuse)).toBe('private-bucket-public');
 	});
 });
@@ -63,7 +63,7 @@ describe('loadSettings — sync and compatibility', () => {
 
 	it('keeps unknown fields and becomes read-only for newer schemas', () => {
 		const device = emptyDeviceState();
-		const newer = { ...v1, schemaVersion: 3, futureFeature: { a: 1 } };
+		const newer = { ...v1, schemaVersion: 4, futureFeature: { a: 1 } };
 		const { settings, readOnly, changed } = loadSettings(newer, device);
 		expect(readOnly).toBe(true);
 		expect(changed).toBe(false);

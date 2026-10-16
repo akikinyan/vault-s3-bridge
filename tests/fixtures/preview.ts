@@ -24,7 +24,7 @@ export const creds = (hoursValid = 1): AwsCredentialIdentity => ({
 });
 
 export function connection(o: Partial<StorageConnection> = {}): StorageConnection {
-	return { id: 'c-work', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: 'x', region: 'ap-northeast-1', ...o };
+	return { id: 'c-work', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: 'x', region: 'ap-northeast-1', keyTemplate: 'k/{hash}.{ext}', ...o };
 }
 
 export function settingsWith(...connections: StorageConnection[]): PluginSettings {

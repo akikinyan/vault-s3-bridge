@@ -1,5 +1,6 @@
 import type { NodeHttpHandler } from '@smithy/node-http-handler';
-import { getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
+import { join } from 'node:path';
+import { FileSystemAdapter, getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
 import { setLanguage, t, type MessageKey } from './i18n';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
@@ -12,6 +13,7 @@ import { connectionState } from './settings/registry';
 import { VaultS3BridgeSettingTab } from './settings/SettingTab';
 import { SettingsStore, type MutateResult, type ReadOnlyReason } from './settings/store';
 import type { PluginSettings, StorageConnection } from './settings/types';
+import { readJsonFile, writeFileAtomic } from './util/atomicFile';
 import type { DeepReadonly } from './util/deepReadonly';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
@@ -64,6 +66,10 @@ export default class VaultS3BridgePlugin extends Plugin {
 			saveData: (data) => this.saveData(data),
 			device: this.deviceStorage,
 			sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+			privateFilesBackup: this.pluginFile('private-files.json', (path) => ({
+				read: () => readJsonFile(path),
+				write: (hashes) => writeFileAtomic(path, JSON.stringify({ version: 1, privateFiles: hashes })),
+			})),
 		});
 		this.settings = this.store.current;
 		this.register(
@@ -116,6 +122,13 @@ export default class VaultS3BridgePlugin extends Plugin {
 	}
 
 	// ---- settings -------------------------------------------------------------------------------
+
+	/** Absolute path of a file in this plugin's folder (desktop only), passed to `build`. */
+	private pluginFile<T>(name: string, build: (path: string) => T): T | undefined {
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter) || !this.manifest.dir) return undefined;
+		return build(join(adapter.getBasePath(), this.manifest.dir, name));
+	}
 
 	/** Called by Obsidian when data.json changed on disk (e.g. synchronisation). */
 	async onExternalSettingsChange(): Promise<void> {

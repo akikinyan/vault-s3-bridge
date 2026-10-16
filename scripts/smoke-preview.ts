@@ -19,7 +19,7 @@ interface DevConfig {
 }
 
 const dev = JSON.parse(readFileSync('local/dev.json', 'utf8')) as DevConfig;
-const connection: StorageConnection = { id: 'smoke', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: dev.bucket, region: dev.region };
+const connection: StorageConnection = { id: 'smoke', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: dev.bucket, region: dev.region, keyTemplate: 'smoke/{filename}.{ext}' };
 const settings: PluginSettings = { ...structuredClone(DEFAULT_SETTINGS), connections: [connection], ...recordConnection(recordsOf(DEFAULT_SETTINGS), connection) };
 const device = emptyDeviceState();
 setProfile(device, connection.id, dev.profile);

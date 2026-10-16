@@ -36,6 +36,7 @@ const connection: StorageConnection = {
 	classification: 'private',
 	bucket,
 	region: dev.region,
+	keyTemplate: 'smoke/{filename}.{ext}',
 };
 
 const report = await runConnectionTest(connection, {

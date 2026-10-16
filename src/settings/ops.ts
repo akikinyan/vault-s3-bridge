@@ -4,7 +4,8 @@ import { setProfile } from './device';
 import { checkConnectionSave } from './connectionSave';
 import { recordConnection, recordsOf, resolveConflict } from './registry';
 import type { Op } from './store';
-import { DEFAULT_SETTINGS, type LanguageSetting, type StorageConnection } from './types';
+import { mergeHistory, normalizeHashes } from './history';
+import { DEFAULT_SETTINGS, type HistoryEntry, type LanguageSetting, type StorageConnection } from './types';
 import { validateProxyUrl } from './validate';
 import { cloneData } from '../util/deepReadonly';
 
@@ -88,6 +89,26 @@ export function resetOp(): Op<void> {
 	return (draft) => {
 		const defaults = cloneData(DEFAULT_SETTINGS);
 		Object.assign(draft, { ...defaults, ...recordsOf(draft), extra: draft.extra });
+		return { ok: true, value: undefined };
+	};
+}
+
+/** I1: records hashes of files about to be sent to private storage. Saved before anything is sent. */
+export function addPrivateFilesOp(hashes: readonly string[]): Op<void> {
+	return (draft) => {
+		const valid = normalizeHashes(hashes);
+		if (valid.length !== hashes.length) return { ok: false, error: [] };
+		draft.privateFiles = normalizeHashes([...draft.privateFiles, ...valid]);
+		return { ok: true, value: undefined };
+	};
+}
+
+/** Adds completed uploads to the history. Invalid entries are rejected as a whole. */
+export function appendHistoryOp(entries: readonly HistoryEntry[]): Op<void> {
+	return (draft) => {
+		const merged = mergeHistory(entries);
+		if (merged.length !== entries.length) return { ok: false, error: [] };
+		draft.history = mergeHistory(draft.history, merged);
 		return { ok: true, value: undefined };
 	};
 }
