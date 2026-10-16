@@ -17,3 +17,8 @@ data.json
 .vscode/
 .idea/
 *.log
+
+# Plugin data written beside data.json (the dev vault links its plugin folder here)
+private-files.json
+pending-*.json
+*.tmp-*

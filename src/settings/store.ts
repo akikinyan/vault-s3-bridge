@@ -154,6 +154,8 @@ export class SettingsStore {
 
 	/** Set when private-files.json could not be written (data.json still holds the records). */
 	backupFailed = false;
+	/** Set when the device mirror could not be saved (localStorage full or unavailable). */
+	mirrorFailed = false;
 
 	private async pass(
 		req: { kind: 'reload' } | { kind: 'checkpoint' } | { kind: 'mutate'; op: Op<unknown>; allowUnreadable: boolean },
@@ -239,7 +241,12 @@ export class SettingsStore {
 
 		// 9. Common end: keep records, follow the disk for ordinary settings, notify on any change.
 		nextDevice.mirror = recordsOf(next);
-		saveDeviceState(this.io.device, nextDevice);
+		try {
+			saveDeviceState(this.io.device, nextDevice);
+		} catch {
+			// The device mirror is only a backup (e.g. localStorage is full); data.json stays authoritative.
+			this.mirrorFailed = true;
+		}
 		this.reason = clearReadOnly ? undefined : reason;
 		const authChanged = changedProfiles(this.deviceState, nextDevice);
 		const settingsChanged = stableStringify(serializeSettings(next)) !== stableStringify(serializeSettings(this.settings as PluginSettings));

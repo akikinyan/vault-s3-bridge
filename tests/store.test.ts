@@ -15,9 +15,9 @@ class FakeIO implements StoreIO {
 	loadImpl?: () => Promise<unknown>;
 	sleeps = 0;
 	readonly local = new Map<string, unknown>();
-	readonly device = {
+	readonly device: { load(key: string): unknown; save(key: string, data: unknown): void } = {
 		load: (key: string) => this.local.get(key),
-		save: (key: string, data: unknown) => this.local.set(key, structuredClone(data)),
+		save: (key: string, data: unknown) => void this.local.set(key, structuredClone(data)),
 	};
 	loadData(): Promise<unknown> {
 		if (this.loadImpl) return this.loadImpl();
@@ -191,6 +191,18 @@ describe('SettingsStore — mutate', () => {
 		expect(store.current.connections).toEqual([]);
 		expect(store.current.privateBuckets).toEqual(['aws:x']);
 		expect(store.device.profiles.c1).toBeUndefined();
+	});
+
+	it('still succeeds when the device mirror cannot be saved', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		io.device.save = () => {
+			throw new Error('QuotaExceededError');
+		};
+		const r = await store.mutate(saveConnectionOp(undefined, priv, 'p'));
+		expect(r.ok).toBe(true);
+		expect(store.current.connections.map((c) => c.id)).toEqual(['c1']);
+		expect(store.mirrorFailed).toBe(true);
 	});
 
 	it('rejects an invalid value without saving', async () => {
