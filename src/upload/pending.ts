@@ -210,6 +210,8 @@ export function parsePendingFile(text: string, deviceId: string): PendingItem[] 
 	return list;
 }
 
+const PHASE_ORDER: readonly KeyPhase[] = ['candidate', 'prepared', 'alt'];
+
 const serialize = (deviceId: string, items: readonly PendingItem[]) => JSON.stringify({ version: 1, deviceId, items }, null, '\t');
 
 export type OtherDeviceFile = { deviceId: string; count: number } | { deviceId: string; damaged: true };
@@ -267,12 +269,26 @@ export class PendingStore {
 		});
 	}
 
+	/**
+	 * Key changes follow 6-0 and 7-2 only: the key moves from the candidate to the prepared key before any Put,
+	 * altKey is set once, and the phase only moves forward. Anything else is `wrong-state`.
+	 */
 	update(ids: readonly string[], patch: PendingPatch): Promise<PendingResult> {
 		const p = { ...patch } as Record<string, unknown>;
+		const keyChangeAllowed = (item: PendingItem) => {
+			const phase = patch.phase ?? item.phase;
+			if (PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(item.phase)) return false;
+			if (patch.key !== undefined && patch.key !== item.key) {
+				if (item.putSent || item.phase !== 'candidate' || phase !== 'prepared' || patch.key !== item.preparedKey) return false;
+			}
+			if (patch.altKey !== undefined && (item.altKey !== undefined || phase !== 'alt')) return false;
+			if (phase === 'alt' && item.phase !== 'alt' && patch.altKey === undefined) return false;
+			return true;
+		};
 		const marksExisting = patch.state === 'done-unrecorded' || patch.state === 'delivered' || patch.state === 'unresolved';
 		// Once the caller says the object exists (or may), no failure path may delete the record, even if this write fails.
 		if (marksExisting) for (const id of ids) this.unsafe.add(id);
-		return this.edit(ids, (item) => ({ ...item, ...p }));
+		return this.edit(ids, (item) => ({ ...item, ...p }), { allowed: keyChangeAllowed });
 	}
 
 	/** Written right before a Put. Sets putSent itself. */
@@ -285,11 +301,10 @@ export class PendingStore {
 	 * object): it created nothing. The only way to leave putting without making the item uncertain.
 	 */
 	markPutRejected(ids: readonly string[], reason?: string): Promise<PendingResult> {
-		return this.edit(
-			ids,
-			(item) => ({ ...item, state: 'recorded', ...(reason === undefined ? {} : { reason }) }),
-			(item) => item.state === 'putting',
-		);
+		return this.edit(ids, (item) => ({ ...item, state: 'recorded', ...(reason === undefined ? {} : { reason }) }), {
+			allowed: (item) => item.state === 'putting',
+			rejection: true,
+		});
 	}
 
 	/** The Put's outcome is unknown. The item is treated as uncertain in memory even if this write fails. */
@@ -426,20 +441,24 @@ export class PendingStore {
 	}
 
 	/**
-	 * @param fromState when given, every item must satisfy it (otherwise nothing changes); used by markPutRejected,
-	 * which is also the only edit allowed to leave putting without marking the item uncertain.
+	 * @param opts.allowed every item must satisfy it, otherwise nothing changes (`wrong-state`).
+	 * @param opts.rejection only markPutRejected: leaves putting without marking the item uncertain.
 	 */
-	private edit(ids: readonly string[], f: (item: PendingItem) => PendingItem, fromState?: (item: PendingItem) => boolean): Promise<PendingResult> {
+	private edit(
+		ids: readonly string[],
+		f: (item: PendingItem) => PendingItem,
+		opts: { allowed?: (item: PendingItem) => boolean; rejection?: boolean } = {},
+	): Promise<PendingResult> {
 		return this.change((list) => {
 			const wanted = new Set(ids);
 			if ([...wanted].some((id) => !list.some((i) => i.id === id))) return 'unknown-item';
-			if (fromState && !list.filter((i) => wanted.has(i.id)).every(fromState)) return 'wrong-state';
+			if (opts.allowed && !list.filter((i) => wanted.has(i.id)).every(opts.allowed)) return 'wrong-state';
 			const at = this.now().toISOString();
 			return list.map((item) => {
 				if (!wanted.has(item.id)) return item;
 				const next = f(item);
 				// Leaving putting without a recorded rejection means the Put's outcome is unknown.
-				const leftPutUnanswered = item.state === 'putting' && next.state !== 'putting' && !fromState;
+				const leftPutUnanswered = item.state === 'putting' && next.state !== 'putting' && !opts.rejection;
 				// The flags only ever grow, whatever the caller passed.
 				return {
 					...next,

@@ -158,6 +158,31 @@ describe('PendingStore — writing', () => {
 		expect(await store.update(['zz'], { state: 'stopped' })).toEqual({ ok: false, reason: 'unknown-item' });
 	});
 
+	it('changes keys only the way 6-0 and 7-2 allow', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		await store.add([newItem('c', { key: 'old/c.png', phase: 'candidate' }), newItem('p'), newItem('s')]);
+		// Candidate → prepared key, before any Put: allowed, and only to the recorded prepared key.
+		expect(await store.update(['c'], { key: 'other/c.png', phase: 'prepared' })).toEqual({ ok: false, reason: 'wrong-state' });
+		expect(await store.update(['c'], { key: 'k/c.png', phase: 'prepared' })).toEqual({ ok: true });
+		expect(await store.update(['c'], { phase: 'candidate' })).toEqual({ ok: false, reason: 'wrong-state' }); // no going back
+		// altKey is set once, together with the alt phase.
+		expect(await store.update(['p'], { phase: 'alt' })).toEqual({ ok: false, reason: 'wrong-state' });
+		expect(await store.update(['p'], { altKey: 'k/p-1.png' })).toEqual({ ok: false, reason: 'wrong-state' });
+		expect(await store.update(['p'], { altKey: 'k/p-1.png', phase: 'alt' })).toEqual({ ok: true });
+		expect(await store.update(['p'], { altKey: 'k/p-2.png', phase: 'alt' })).toEqual({ ok: false, reason: 'wrong-state' });
+		// After a Put was sent, the key it went to must stay in the record.
+		await store.markPutting(['s']);
+		expect(await store.update(['s'], { key: 'k/elsewhere.png' })).toEqual({ ok: false, reason: 'wrong-state' });
+		expect(store.items.map((i) => [i.key, i.altKey, i.phase])).toEqual([['k/c.png', undefined, 'prepared'], ['k/p.png', 'k/p-1.png', 'alt'], ['k/s.png', undefined, 'prepared']]);
+
+		// A candidate record that already sent a Put (never produced by design; resumed as unresolved): its key stays.
+		const disk = new FakeIO();
+		disk.files.set(OWN_FILE, fileText(OWN, [storedItem('x', { key: 'old/x.png', phase: 'candidate', state: 'stopped', putSent: true })]));
+		const loaded = await storeWith(disk);
+		expect(await loaded.update(['x'], { key: 'k/x.png', phase: 'prepared' })).toEqual({ ok: false, reason: 'wrong-state' });
+	});
+
 	it('sets putSent itself and never clears putSent or uncertain', async () => {
 		const io = new FakeIO();
 		const store = await storeWith(io);
