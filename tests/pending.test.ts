@@ -347,6 +347,33 @@ describe('PendingStore — other devices (7-5)', () => {
 		expect(await store.removeFailed(['x'])).toEqual({ ok: false, reason: 'not-removable' });
 	});
 
+	it('carries what memory knows about its own items into the file it writes on takeover', async () => {
+		const io = new FakeIO();
+		io.files.set(OTHER_FILE, fileText(OTHER, [storedItem('x')]));
+		const store = await storeWith(io);
+		await store.add([newItem('a')]);
+		// a reused an existing object, but saving done-unrecorded failed: only memory knows.
+		io.failWrite = true;
+		expect(await store.update(['a'], { state: 'done-unrecorded' })).toEqual({ ok: false, reason: 'write-failed' });
+		io.failWrite = false;
+		expect(await store.takeOver(OTHER)).toEqual({ ok: true });
+		expect(io.itemsOf(OWN_FILE).find((i) => i.id === 'a')).toMatchObject({ uncertain: true });
+		expect(await (await storeWith(io)).removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+	});
+
+	it('keeps what memory knows across a second load in the same session', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		await store.add([newItem('a'), newItem('b')]);
+		io.failWrite = true;
+		expect(await store.update(['a'], { state: 'done-unrecorded' })).toEqual({ ok: false, reason: 'write-failed' });
+		io.failWrite = false;
+		expect(await store.load()).toBe('ready');
+		expect(await store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.update(['b'], { state: 'stopped' })).toEqual({ ok: true });
+		expect(await (await storeWith(io)).removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+	});
+
 	it('keeps items that reached the other file after it was read', async () => {
 		const io = new FakeIO();
 		io.files.set(OTHER_FILE, fileText(OTHER, [storedItem('x')]));

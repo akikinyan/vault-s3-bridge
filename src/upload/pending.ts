@@ -377,12 +377,7 @@ export class PendingStore {
 			if (!theirs) return { ok: false, reason: 'damaged-file' } as const;
 			const own = new Set(this.list.map((i) => i.id));
 			const merged = [...(cloneData(this.list) as PendingItem[]), ...theirs.filter((i) => !own.has(i.id))];
-			try {
-				await this.io.writeAtomic(this.fileName, serialize(this.deviceId, merged));
-			} catch {
-				return { ok: false, reason: 'write-failed' } as const;
-			}
-			this.list = deepFreeze(merged);
+			if (!(await this.writeOwn(merged))) return { ok: false, reason: 'write-failed' } as const;
 			// Re-read: the other file may have changed since (e.g. synchronisation). Keep only what was not taken.
 			const taken = new Set(theirs.map((i) => i.id));
 			const now = await this.readOther(otherDeviceId);
@@ -410,7 +405,7 @@ export class PendingStore {
 	private become(state: PendingStatus, items: PendingItem[]): PendingStatus {
 		this.state = state;
 		this.list = deepFreeze(items);
-		this.unsafe.clear();
+		// Never cleared: a mark whose write failed must survive a second load in the same session.
 		for (const i of items) if (i.uncertain) this.unsafe.add(i.id);
 		return state;
 	}
@@ -427,17 +422,24 @@ export class PendingStore {
 			if (this.state !== 'ready') return { ok: false, reason: 'not-ready' } as const;
 			const proposed = next(cloneData(this.list) as PendingItem[]);
 			if (typeof proposed === 'string') return { ok: false, reason: proposed } as const;
-			// Applied to every item written, not only the edited ones: what is known in memory reaches the disk.
-			const result = proposed.map((i) => (!i.uncertain && (this.unsafe.has(i.id) || MAY_EXIST.has(i.state)) ? { ...i, uncertain: true } : i));
-			try {
-				await this.io.writeAtomic(this.fileName, serialize(this.deviceId, result));
-			} catch {
-				return { ok: false, reason: 'write-failed' } as const;
-			}
-			this.list = deepFreeze(result);
-			for (const i of result) if (i.uncertain) this.unsafe.add(i.id);
-			return { ok: true } as const;
+			return (await this.writeOwn(proposed)) ? ({ ok: true } as const) : ({ ok: false, reason: 'write-failed' } as const);
 		});
+	}
+
+	/**
+	 * The only writer of this device's file. Marks as uncertain every item that memory knows may have an object
+	 * (all items written, not only edited ones), writes, and only then makes the list current.
+	 */
+	private async writeOwn(items: PendingItem[]): Promise<boolean> {
+		const result = items.map((i) => (!i.uncertain && (this.unsafe.has(i.id) || MAY_EXIST.has(i.state)) ? { ...i, uncertain: true } : i));
+		try {
+			await this.io.writeAtomic(this.fileName, serialize(this.deviceId, result));
+		} catch {
+			return false;
+		}
+		this.list = deepFreeze(result);
+		for (const i of result) if (i.uncertain) this.unsafe.add(i.id);
+		return true;
 	}
 
 	/**
