@@ -138,6 +138,14 @@ export interface PrepareDeps {
 	newId(): string;
 }
 
+/** 8-1 step 1: notes in an excluded folder (or below it) are never uploaded from. */
+export function inExcludedFolder(notePath: string, folders: readonly string[]): boolean {
+	return folders.some((f) => {
+		const dir = f.replace(/^\/+|\/+$/g, '');
+		return dir === '' ? false : notePath === dir || notePath.startsWith(`${dir}/`);
+	});
+}
+
 export function jobTarget(c: DeepReadonly<StorageConnection>): JobTarget {
 	return {
 		connectionId: c.id,
@@ -342,7 +350,11 @@ export function confirmedValues(connection: DeepReadonly<StorageConnection>, aut
 export interface RunDeps {
 	settings: Pick<SettingsStore, 'checkpoint' | 'mutate' | 'subscribe' | 'current' | 'readOnly'>;
 	pending: PendingStore;
-	client: UploaderDeps['client'];
+	/**
+	 * A client with credentials that passed the authentication gate, resolved before each group (10-3: not
+	 * inside the checkpoint). Rejects when the gate fails; the remaining groups are then not started.
+	 */
+	client(signal: AbortSignal): Promise<UploaderDeps['client']>;
 	timeoutMs: number;
 	/** Stop button and plugin unload. */
 	signal: AbortSignal;
@@ -455,16 +467,28 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 		return bytes !== undefined && !deps.sourceChanged(path) && sha256Hex(bytes) === sha;
 	};
 	const results: FileResult[] = [];
+	let notStarted: string | undefined;
 	for (const group of plan.groups) {
 		const pathOf = new Map(group.files.map((f) => [f.itemId, f.sourcePath]));
-		if (signal.aborted) {
-			for (const f of group.files) results.push({ itemId: f.itemId, sourcePath: f.sourcePath, outcome: 'not-started', linked: false });
+		const skip = (reason?: string) => {
+			for (const f of group.files) results.push({ itemId: f.itemId, sourcePath: f.sourcePath, outcome: 'not-started', ...(reason ? { reason } : {}), linked: false });
+		};
+		if (signal.aborted || notStarted) {
+			skip(notStarted);
+			continue;
+		}
+		let client: UploaderDeps['client'];
+		try {
+			client = await deps.client(signal);
+		} catch {
+			notStarted = signal.aborted ? undefined : 'credentials';
+			skip(notStarted);
 			continue;
 		}
 		const uploader: UploaderDeps = {
 			pending: deps.pending,
 			settings: deps.settings,
-			client: deps.client,
+			client,
 			signal,
 			timeoutMs: deps.timeoutMs,
 			check: jobCheck(deps, plan, confirmed),
@@ -573,6 +597,7 @@ async function unlink(deps: RunDeps, results: readonly FileResult[], reason: str
 
 export type CommandStop =
 	| { stop: 'busy' }
+	| { stop: 'excluded-folder' }
 	| { stop: 'pending-not-ready' }
 	| { stop: 'no-connection' }
 	| { stop: 'connection-not-active' }
@@ -602,6 +627,7 @@ export async function uploadCommand(deps: CommandDeps, preview: boolean): Promis
 	const release = deps.lock.acquire();
 	if (!release) return { stop: 'busy' };
 	try {
+		if (inExcludedFolder(deps.notePath, deps.settings.current.upload.excludeFolders)) return { stop: 'excluded-folder' };
 		if (!preview && deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
 		const picked = await deps.pickConnection();
 		if (!picked) return { stop: 'no-connection' };

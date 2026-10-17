@@ -16,6 +16,7 @@ import {
 	type PrepareDeps,
 	type RunDeps,
 	runJob,
+	inExcludedFolder,
 	type SourceFile,
 	uploadCommand,
 } from '../src/upload/job';
@@ -86,6 +87,7 @@ interface World {
 	editors: FakeEditor[];
 	copied: string[];
 	copyFails: boolean;
+	credentialsFail: boolean;
 	abort: AbortController;
 	prep: PrepareDeps;
 	run: RunDeps;
@@ -123,6 +125,7 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		editors: [],
 		copied: [],
 		copyFails: false,
+		credentialsFail: false,
 		abort: new AbortController(),
 		prep: undefined as never,
 		run: undefined as never,
@@ -156,7 +159,7 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 	w.run = {
 		settings,
 		pending,
-		client: w.s3 as never,
+		client: () => (w.credentialsFail ? Promise.reject(new Error('sso')) : Promise.resolve(w.s3 as never)),
 		timeoutMs: 15_000,
 		signal: w.abort.signal,
 		authGeneration: (id) => profileOf(settings.device, id)?.generation,
@@ -508,6 +511,20 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(w.disk.text).toBe(`![a](s3-bridge://work/${alt})`);
 	});
 
+	it('credentials are resolved before each group; if the gate fails nothing is recorded or sent', async () => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		w.credentialsFail = true;
+		const r = await runJob(await plan(w, note), confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([
+			['not-started', 'credentials'],
+			['not-started', 'credentials'],
+		]);
+		expect(w.s3.calls).toEqual([]);
+		expect(w.pendingIO.writes).toBe(0);
+		expect(r.link).toEqual({ kind: 'none' });
+	});
+
 	it('failed and stopped files get no link; their embeds stay', async () => {
 		const note = '![[a.png]] ![[b.png]]';
 		const w = await world([priv, pub], note);
@@ -518,6 +535,18 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 			['delivered', true],
 		]);
 		expect(w.disk.text).toBe('![[a.png]] ![b](s3-bridge://work/k/b.png)');
+	});
+});
+
+describe('excluded folders (8-1)', () => {
+	it.each([
+		['templates/a.md', ['templates'], true],
+		['templates/sub/a.md', ['/templates/'], true],
+		['templates2/a.md', ['templates'], false],
+		['notes/a.md', ['templates', ''], false],
+		['a.md', [], false],
+	] as const)('%s in %j → %s', (path, folders, expected) => {
+		expect(inExcludedFolder(path, folders)).toBe(expected);
 	});
 });
 
@@ -578,6 +607,19 @@ describe('uploadCommand (10-1)', () => {
 		const failing = command(w, { detect: () => Promise.reject(new Error('x')) }).deps;
 		await expect(uploadCommand(failing, false)).rejects.toThrow();
 		expect(failing.lock.busy).toBe(false);
+	});
+
+	it('a note in an excluded folder is not uploaded from, nor previewed', async () => {
+		const w = await world([priv, pub], '![[a.png]]');
+		await w.settings.mutate((d) => {
+			d.upload.excludeFolders = ['n'];
+			return { ok: true, value: undefined };
+		});
+		const { deps, calls } = command(w, { notePath: 'n/x.md' });
+		expect(await uploadCommand(deps, false)).toEqual({ stop: 'excluded-folder' });
+		expect(await uploadCommand(deps, true)).toEqual({ stop: 'excluded-folder' });
+		expect(calls).toEqual([]);
+		expect(w.reads).toEqual([]);
 	});
 
 	it('cancel on the confirmation screen sends nothing', async () => {

@@ -15,6 +15,9 @@ import { SettingsStore, type MutateResult, type ReadOnlyReason } from './setting
 import type { PluginSettings, StorageConnection } from './settings/types';
 import { readJsonFile, writeFileAtomic } from './util/atomicFile';
 import type { DeepReadonly } from './util/deepReadonly';
+import { JobLock } from './upload/job';
+import type { UploadHost } from './upload/obsidianJob';
+import { nodePendingIO, PendingStore } from './upload/pending';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
 import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
@@ -45,6 +48,11 @@ export default class VaultS3BridgePlugin extends Plugin {
 	private replacer!: ImageReplacer;
 	private settingTab?: VaultS3BridgeSettingTab;
 	private readonly insertModals = new Set<InsertReferenceModal>();
+	/** Upload resume records of this device; undefined where the plugin folder is not on the file system. */
+	pending: PendingStore | undefined;
+	/** I8: one upload, resume, takeover or discard at a time. */
+	readonly lock = new JobLock();
+	private readonly unloading = new AbortController();
 
 	private readonly deviceStorage: DeviceStorage = {
 		load: (key) => this.app.loadLocalStorage(key) as unknown,
@@ -80,6 +88,8 @@ export default class VaultS3BridgePlugin extends Plugin {
 		);
 		await this.store.reload();
 		setLanguage(this.settings.language, getLanguage());
+		this.pending = this.pluginFile('.', (dir) => new PendingStore(nodePendingIO(dir), this.store.device.deviceId));
+		await this.pending?.load();
 		this.createPreview();
 		this.replacer = new ImageReplacer(() => this.preview, renderPlaceholder);
 
@@ -113,12 +123,18 @@ export default class VaultS3BridgePlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// Stops an upload in flight; its Put is then recorded as of unknown outcome.
+		this.unloading.abort();
 		this.settingTab?.flushPendingText();
 		if (this.recreateTimer !== undefined) window.clearTimeout(this.recreateTimer);
 		for (const modal of [...this.insertModals]) modal.close();
 		this.replacer.releaseAll();
 		this.preview.destroy();
 		this.handler.destroy();
+	}
+
+	get uploadHost(): UploadHost {
+		return { app: this.app, store: this.store, pending: this.pending, lock: this.lock, unload: this.unloading.signal };
 	}
 
 	// ---- settings -------------------------------------------------------------------------------

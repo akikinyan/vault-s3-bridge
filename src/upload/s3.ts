@@ -1,11 +1,19 @@
 // S3 requests of the upload and the classification of their outcomes (design 6-1, 6-2).
 // The upload-specific statuses (412, 409, digest errors) are decided here, before the general classifyError.
-import { HeadObjectCommand, type HeadObjectCommandOutput, PutObjectCommand } from '@aws-sdk/client-s3';
+import { HeadObjectCommand, type HeadObjectCommandOutput, PutObjectCommand, S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { classifyError } from '../aws/errors';
 import { isSha256Hex } from '../settings/history';
 import type { UploadFormat } from '../settings/types';
 
 const CONTENT_TYPE: Record<UploadFormat, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+
+/**
+ * The client for uploads: one attempt per request (the uploader decides every retry, 6-4) and static credentials
+ * that already passed the gate. The header tests use this same function.
+ */
+export function uploadClient(config: Pick<S3ClientConfig, 'region' | 'endpoint' | 'forcePathStyle' | 'credentials' | 'requestHandler'>): S3Client {
+	return new S3Client({ ...config, maxAttempts: 1 });
+}
 
 /** A Put may take longer than an ordinary request: at least this long (6-1). */
 export const PUT_MIN_TIMEOUT_MS = 60_000;

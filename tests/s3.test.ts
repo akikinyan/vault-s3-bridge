@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it } from 'vitest';
-import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_MIN_TIMEOUT_MS, putCommand } from '../src/upload/s3';
+import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_MIN_TIMEOUT_MS, putCommand, uploadClient } from '../src/upload/s3';
 
 interface Captured {
 	method: string;
@@ -26,11 +25,10 @@ function clientAnswering(...responses: { status: number; headers?: Record<string
 		httpHandlerConfigs: () => ({}),
 		destroy: () => undefined,
 	};
-	const client = new S3Client({
+	const client = uploadClient({
 		region: 'ap-northeast-1',
 		credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'example-secret', sessionToken: 'example-token' },
 		requestHandler,
-		maxAttempts: 1,
 	});
 	return { client, captured };
 }
