@@ -313,3 +313,24 @@ describe('SettingsStore — checkpoint', () => {
 		expect(io.saves.length).toBe(before);
 	});
 });
+
+describe('SettingsStore — device id', () => {
+	it('keeps one device id across passes, profile changes and an unreadable data.json', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		const id = store.device.deviceId;
+		expect(id).toMatch(/^[0-9a-f-]{36}$/);
+		expect((io.local.get(DEVICE_STORAGE_KEY) as { deviceId: string }).deviceId).toBe(id);
+		expect((await store.mutate(saveConnectionOp(undefined, priv, 'p'))).ok).toBe(true);
+		expect(store.device.deviceId).toBe(id);
+		expect((io.local.get(DEVICE_STORAGE_KEY) as { deviceId: string }).deviceId).toBe(id);
+
+		// Read-only from the first load: the id is still saved and stays the same on the next start.
+		const ro = new FakeIO();
+		ro.disk = undefined;
+		const first = await storeWith(ro);
+		expect(first.readOnly).toBe('unreadable');
+		const again = await storeWith(ro);
+		expect(again.device.deviceId).toBe(first.device.deviceId);
+	});
+});

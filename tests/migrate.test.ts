@@ -4,6 +4,9 @@ import { loadSettings, serializeSettings } from '../src/settings/migrate';
 import { checkNewConnection, recordsOf } from '../src/settings/registry';
 import { DEFAULT_SETTINGS } from '../src/settings/types';
 
+const ID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
 const v1 = {
 	schemaVersion: 1,
 	connections: [
@@ -103,12 +106,37 @@ describe('device state', () => {
 	it('round-trips through storage and ignores malformed data', () => {
 		const store = new Map<string, unknown>();
 		const storage = { load: (k: string) => store.get(k), save: (k: string, v: unknown) => void store.set(k, JSON.parse(JSON.stringify(v))) };
-		const d = emptyDeviceState();
+		const d = emptyDeviceState(ID_A);
 		setProfile(d, 'c', 'a');
 		saveDeviceState(storage, d);
 		expect(loadDeviceState(storage)).toEqual(d);
-		store.set('vault-s3-bridge:device', { profiles: { bad: { profile: 1 } }, mirror: 'x' });
-		expect(loadDeviceState(storage)).toEqual(emptyDeviceState());
+		store.set('vault-s3-bridge:device', { deviceId: ID_A, profiles: { bad: { profile: 1 } }, mirror: 'x' });
+		expect(loadDeviceState(storage)).toEqual(emptyDeviceState(ID_A));
+	});
+
+	it('creates a device id once and saves it at once, keeping the rest of the stored value', () => {
+		const store = new Map<string, unknown>();
+		const storage = { load: (k: string) => store.get(k), save: (k: string, v: unknown) => void store.set(k, JSON.parse(JSON.stringify(v))) };
+		let n = 0;
+		const ids = [ID_A, ID_B];
+		const newId = () => ids[n++]!;
+		expect(loadDeviceState(storage, newId).deviceId).toBe(ID_A);
+		expect(store.get('vault-s3-bridge:device')).toEqual({ deviceId: ID_A });
+		expect(loadDeviceState(storage, newId).deviceId).toBe(ID_A); // not replaced on the next load
+		// Malformed state elsewhere keeps the id; the stored value is not normalised away.
+		store.set('vault-s3-bridge:device', { deviceId: ID_A, mirror: 'x' });
+		expect(loadDeviceState(storage, newId).deviceId).toBe(ID_A);
+		expect(store.get('vault-s3-bridge:device')).toEqual({ deviceId: ID_A, mirror: 'x' });
+		// An id that is not exactly a UUID (it names a file) is replaced.
+		store.set('vault-s3-bridge:device', { deviceId: '../x', profiles: {} });
+		expect(loadDeviceState(storage, newId).deviceId).toBe(ID_B);
+		expect(store.get('vault-s3-bridge:device')).toEqual({ deviceId: ID_B, profiles: {} });
+		expect(n).toBe(2);
+	});
+
+	it('keeps the new id in memory when saving it fails', () => {
+		const storage = { load: () => undefined, save: () => { throw new Error('quota'); } };
+		expect(loadDeviceState(storage, () => ID_B).deviceId).toBe(ID_B);
 	});
 });
 

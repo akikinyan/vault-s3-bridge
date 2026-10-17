@@ -5,6 +5,8 @@ import type { AliasBinding, AliasResolution } from './types';
 
 /** Per-device, per-vault state. Never synced (stored with App.saveLocalStorage). */
 export interface DeviceState {
+	/** Random id of this device for this vault. Names the device's resume-record file. */
+	deviceId: string;
 	profiles: Record<string, { profile: string; generation: number }>;
 	mirror: { aliasBindings: AliasBinding[]; aliasResolutions: AliasResolution[]; privateBuckets: TargetKey[]; privateFiles: string[] };
 }
@@ -16,17 +18,35 @@ export interface DeviceStorage {
 	save(key: string, data: unknown): void;
 }
 
-export function emptyDeviceState(): DeviceState {
-	return { profiles: {}, mirror: { aliasBindings: [], aliasResolutions: [], privateBuckets: [], privateFiles: [] } };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** A device id is used in a file name, so only the exact UUID form is accepted. */
+export function isDeviceId(value: unknown): value is string {
+	return typeof value === 'string' && UUID.test(value);
+}
+
+export function emptyDeviceState(deviceId = ''): DeviceState {
+	return { deviceId, profiles: {}, mirror: { aliasBindings: [], aliasResolutions: [], privateBuckets: [], privateFiles: [] } };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
 	return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-export function loadDeviceState(storage: DeviceStorage): DeviceState {
+/**
+ * Reads the device state. A missing or malformed device id is replaced and saved at once, without waiting for
+ * a settings save (which may be impossible while data.json is read-only); the rest of the stored value is kept.
+ */
+export function loadDeviceState(storage: DeviceStorage, newId: () => string = () => crypto.randomUUID()): DeviceState {
 	const raw = storage.load(DEVICE_STORAGE_KEY);
-	const state = emptyDeviceState();
+	const state = emptyDeviceState(isRecord(raw) && isDeviceId(raw.deviceId) ? raw.deviceId : newId());
+	if (!isRecord(raw) || raw.deviceId !== state.deviceId) {
+		try {
+			storage.save(DEVICE_STORAGE_KEY, { ...(isRecord(raw) ? raw : {}), deviceId: state.deviceId });
+		} catch {
+			// Kept in memory; the next successful settings pass saves the whole device state.
+		}
+	}
 	if (!isRecord(raw)) return state;
 	if (isRecord(raw.profiles)) {
 		for (const [id, v] of Object.entries(raw.profiles)) {
