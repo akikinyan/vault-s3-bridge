@@ -416,6 +416,24 @@ describe('PendingStore — other devices (7-5)', () => {
 	});
 });
 
+describe('PendingStore — discarding another device’s file (7-5)', () => {
+	it('removes the file with unlink, also when it is damaged; never its own file', async () => {
+		const io = new FakeIO();
+		io.files.set(OTHER_FILE, fileText(OTHER, [storedItem('x')]));
+		const store = await storeWith(io);
+		expect(await store.discardOther(OTHER)).toEqual({ ok: true });
+		expect(io.log).toEqual([`unlink ${OTHER_FILE}`]);
+		expect(io.files.has(OTHER_FILE)).toBe(false);
+		io.files.set(OTHER_FILE, 'broken');
+		expect(await store.discardOther(OTHER)).toEqual({ ok: true });
+		expect(io.files.has(OTHER_FILE)).toBe(false);
+		// Already gone: nothing to do.
+		expect(await store.discardOther(OTHER)).toEqual({ ok: true });
+		expect(await store.discardOther(OWN)).toEqual({ ok: false, reason: 'not-found' });
+		expect(await store.discardOther('../x')).toEqual({ ok: false, reason: 'not-found' });
+	});
+});
+
 describe('PendingStore — files on disk', () => {
 	const dirs: string[] = [];
 	const tempDir = async () => {

@@ -3,9 +3,10 @@
 import type { MessageKey } from '../i18n';
 import type { PluginSettings } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
-import type { CommandStop, FileOutcome, JobPlan, JobResult, PlannedGroup, SkipReason } from './job';
+import type { CommandStop, CopyResult, FileOutcome, JobPlan, JobResult, PlannedGroup, ResumeResult, ResumeStop, SkipReason } from './job';
 import { identifyingVariables, type KeyVariable } from './key';
-import type { PendingItem } from './pending';
+import type { PendingItem, PendingState } from './pending';
+import type { ItemOutcome } from './uploader';
 
 /** new: sent to a new key; history: the same bytes were uploaded before (Head decides); shared: the group's object; deferred: next run. */
 export type RowStatus = 'new' | 'history' | 'shared' | 'deferred';
@@ -166,4 +167,61 @@ export function formatBytes(n: number): string {
 	if (n < 1024) return `${n} B`;
 	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
 	return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** D10: the label comes from the state, never from `uncertain`. */
+export const STATE_KEY: Record<PendingState, MessageKey> = {
+	recorded: 'pending.state.recorded',
+	putting: 'pending.state.unknown',
+	indeterminate: 'pending.state.unknown',
+	unresolved: 'pending.state.unresolved',
+	'done-unrecorded': 'pending.state.doneUnrecorded',
+	delivered: 'pending.state.delivered',
+	stopped: 'pending.state.stopped',
+};
+
+export function resumeLines(r: ResumeStop | { done: ResumeResult[]; mismatched: number }): Line[] {
+	if ('stop' in r) {
+		switch (r.stop) {
+			case 'busy':
+				return [{ key: 'upload.stop.busy' }];
+			case 'pending-not-ready':
+				return [{ key: 'upload.stop.pendingNotReady' }];
+			case 'nothing':
+				return [{ key: r.mismatched > 0 ? 'pending.resume.mismatched' : 'pending.resume.nothing', params: { n: String(r.mismatched) } }];
+			case 'cancelled':
+				return [];
+		}
+	}
+	const lines: Line[] = [];
+	const counts = new Map<Exclude<ItemOutcome, 'delivered'>, number>();
+	let delivered = 0;
+	for (const d of r.done) {
+		if (d.aborted) lines.push({ key: ABORT_KEY[d.aborted] });
+		for (const x of d.results) {
+			if (x.outcome === 'delivered') delivered++;
+			else counts.set(x.outcome, (counts.get(x.outcome) ?? 0) + 1);
+		}
+	}
+	if (delivered > 0) lines.push({ key: 'pending.resume.delivered', params: { n: String(delivered) } });
+	for (const [outcome, n] of counts) lines.push({ key: OUTCOME_KEY[outcome], params: { n: String(n) } });
+	if (r.mismatched > 0) lines.push({ key: 'pending.resume.mismatched', params: { n: String(r.mismatched) } });
+	return lines;
+}
+
+const COPY_SKIP_KEY: Record<Extract<CopyResult, { copied: number }>['skipped'][number]['reason'], MessageKey> = {
+	'target-mismatch': 'pending.copy.targetMismatch',
+	'markdown-check': 'pending.copy.markdownCheck',
+	'private-recorded': 'pending.copy.privateRecorded',
+};
+
+export function copyLines(r: CopyResult): Line[] {
+	if ('stop' in r) return [{ key: r.stop === 'busy' ? 'upload.stop.busy' : r.stop === 'nothing' ? 'pending.copy.nothing' : 'upload.stop.pendingNotReady' }];
+	const lines: Line[] = [];
+	if (r.copied > 0) lines.push({ key: 'pending.copy.copied', params: { n: String(r.copied) } });
+	if (!r.ok) lines.push({ key: 'pending.copy.failed' });
+	const by = new Map<MessageKey, number>();
+	for (const s of r.skipped) by.set(COPY_SKIP_KEY[s.reason], (by.get(COPY_SKIP_KEY[s.reason]) ?? 0) + 1);
+	for (const [key, n] of by) lines.push({ key, params: { n: String(n) } });
+	return lines;
 }

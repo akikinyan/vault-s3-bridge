@@ -406,6 +406,23 @@ export class PendingStore {
 		});
 	}
 
+	/**
+	 * Discards another device's record file after the user confirmed it (7-5): removed with unlink, not moved to
+	 * the vault's trash. A damaged file can be discarded too; a missing one is already gone.
+	 */
+	discardOther(otherDeviceId: string): Promise<PendingResult> {
+		return this.enqueue(async () => {
+			if (!isDeviceId(otherDeviceId) || otherDeviceId === this.deviceId) return { ok: false, reason: 'not-found' } as const;
+			const name = pendingFileName(otherDeviceId);
+			try {
+				await this.io.unlink(name);
+			} catch {
+				if ((await this.io.read(name)).kind !== 'missing') return { ok: false, reason: 'write-failed' } as const;
+			}
+			return { ok: true } as const;
+		});
+	}
+
 	// --- internals --------------------------------------------------------
 
 	private async readOther(deviceId: string): Promise<PendingItem[] | 'missing' | undefined> {

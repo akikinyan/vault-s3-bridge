@@ -8,12 +8,12 @@ import type { SettingsStore, StoreChange } from '../settings/store';
 import type { PluginSettings, StorageConnection, UploadFormat } from '../settings/types';
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
-import { type Encoder, type PrepareRejection, prepareBytes, sha256Hex } from './convert';
+import { type Encoder, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
 import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
-import { altFor, applyToNote, type ApplyResult, buildMarkdown, type NoteAccess, type Replacement, type Target, verifyMarkdown } from './rewrite';
-import { type ItemResult, sendGroup, type UploaderDeps } from './uploader';
+import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Replacement, type Target, verifyMarkdown } from './rewrite';
+import { type ItemResult, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
 
 const MB = 1024 * 1024;
@@ -392,10 +392,10 @@ export interface JobResult {
 }
 
 /** Job-level conditions inside every checkpoint (10-3 items 2 and 3). The store generation is not compared: the job's own saves change it. */
-function jobCheck(deps: RunDeps, plan: JobPlan, confirmed: Confirmed) {
+function jobCheck(deps: Pick<RunDeps, 'settings' | 'authGeneration'>, connectionId: string, confirmed: Pick<Confirmed, 'connection' | 'authGeneration'>) {
 	return (settings: DeepReadonly<PluginSettings>): string | undefined => {
 		if (deps.settings.readOnly) return 'read-only';
-		const c = settings.connections.find((x) => x.id === plan.target.connectionId);
+		const c = settings.connections.find((x) => x.id === connectionId);
 		if (!c || stableStringify(c) !== confirmed.connection) return 'connection-changed';
 		if (deps.authGeneration(c.id) !== confirmed.authGeneration) return 'auth-changed';
 		return undefined;
@@ -433,31 +433,44 @@ function newItems(plan: JobPlan, group: PlannedGroup, apply: 'replace' | 'copy')
 
 /** 10-1 steps 6 to 8 after the user confirmed `plan`. The caller holds the lock. */
 export async function runJob(plan: JobPlan, confirmed: Confirmed, deps: RunDeps): Promise<JobResult> {
+	const watch = watchAbort(deps.settings, deps.signal, plan.target.connectionId, confirmed.connection);
+	try {
+		const files = await sendAll(plan, confirmed, deps, watch.signal);
+		const link = await linkDelivered(plan, confirmed, deps, files);
+		const cause = watch.cause();
+		return { files, link, ...(cause ? { aborted: cause } : {}) };
+	} finally {
+		watch.dispose();
+	}
+}
+
+export type AbortCause = NonNullable<JobResult['aborted']>;
+
+/** 10-4: the stop signal, or a change of the connection or of its authentication, stops the requests in flight. */
+function watchAbort(settings: Pick<SettingsStore, 'subscribe' | 'current'>, stopSignal: AbortSignal, connectionId: string, connection: string) {
 	const controller = new AbortController();
-	let cause: JobResult['aborted'];
-	const abort = (why: NonNullable<JobResult['aborted']>) => {
+	let cause: AbortCause | undefined;
+	const abort = (why: AbortCause) => {
 		if (controller.signal.aborted) return;
 		cause = why;
 		controller.abort();
 	};
 	const stop = () => abort('stop');
-	if (deps.signal.aborted) stop();
-	deps.signal.addEventListener('abort', stop);
-	const id = plan.target.connectionId;
-	// 10-4: a change of this connection or of its authentication stops the requests in flight.
-	const unsubscribe = deps.settings.subscribe((change: StoreChange) => {
-		const c = deps.settings.current.connections.find((x) => x.id === id);
-		if (!c || stableStringify(c) !== confirmed.connection) abort('connection-changed');
-		else if (change.authChanged.includes(id)) abort('auth-changed');
+	if (stopSignal.aborted) stop();
+	stopSignal.addEventListener('abort', stop);
+	const unsubscribe = settings.subscribe((change: StoreChange) => {
+		const c = settings.current.connections.find((x) => x.id === connectionId);
+		if (!c || stableStringify(c) !== connection) abort('connection-changed');
+		else if (change.authChanged.includes(connectionId)) abort('auth-changed');
 	});
-	try {
-		const files = await sendAll(plan, confirmed, deps, controller.signal);
-		const link = await linkDelivered(plan, confirmed, deps, files);
-		return { files, link, ...(cause ? { aborted: cause } : {}) };
-	} finally {
-		unsubscribe();
-		deps.signal.removeEventListener('abort', stop);
-	}
+	return {
+		signal: controller.signal,
+		cause: () => cause,
+		dispose: () => {
+			unsubscribe();
+			stopSignal.removeEventListener('abort', stop);
+		},
+	};
 }
 
 async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signal: AbortSignal): Promise<FileResult[]> {
@@ -491,7 +504,7 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 			client,
 			signal,
 			timeoutMs: deps.timeoutMs,
-			check: jobCheck(deps, plan, confirmed),
+			check: jobCheck(deps, plan.target.connectionId, confirmed),
 			sourceUnchanged: (item: DeepReadonly<PendingItem>) => sourceUnchanged(item.sourcePath, item.sourceSha256),
 			// Within the job the prepared bytes are the recorded ones, as long as every source is unchanged.
 			rebuild: async (items) => {
@@ -668,4 +681,222 @@ export function resumableGroups(items: DeepReadonly<PendingItem[]>): string[][] 
 		groups.set(i.groupId, [...(groups.get(i.groupId) ?? []), i.id]);
 	}
 	return [...groups.values()];
+}
+
+/** 6-5 step 0: the record's storage is still the connection's storage, and the connection is in use. */
+export function sameStorage(settings: DeepReadonly<PluginSettings>, item: DeepReadonly<PendingItem>): DeepReadonly<StorageConnection> | undefined {
+	const c = settings.connections.find((x) => x.id === item.connectionId);
+	return c && connectionState(settings, c) === 'active' && connectionTarget(c) === item.target && c.classification === item.classification ? c : undefined;
+}
+
+function recordTarget(c: DeepReadonly<StorageConnection>): Target | undefined {
+	if (c.classification === 'private') return { classification: 'private', alias: c.alias };
+	return c.publicBaseUrl !== undefined && !validatePublicBaseUrl(c.publicBaseUrl) ? { classification: 'public', publicBaseUrl: c.publicBaseUrl } : undefined;
+}
+
+/** The Markdown of a record's occurrences (6-5 step 4), with the connection as it is now; undefined if it cannot be made and checked. */
+export function recordMarkdown(item: DeepReadonly<PendingItem>, connection: DeepReadonly<StorageConnection>): string[] | undefined {
+	const target = recordTarget(connection);
+	if (!target) return undefined;
+	const key = item.altKey ?? item.key;
+	const mds = [...new Set(item.occurrences.map((o) => markdownFor(o, target, key)))];
+	return mds.every((md) => verifyMarkdown(md, target, key)) ? mds : undefined;
+}
+
+export interface ResumeTarget {
+	connection: DeepReadonly<StorageConnection>;
+	/** Send groups (item ids) of this connection. */
+	groups: string[][];
+}
+
+/** The resumable groups by connection, and the groups whose recorded storage no longer matches (not resumed, 6-5 step 0). */
+export function resumeTargets(items: DeepReadonly<PendingItem[]>, settings: DeepReadonly<PluginSettings>): { ready: ResumeTarget[]; mismatched: string[][] } {
+	const byId = new Map(items.map((i) => [i.id, i]));
+	const ready = new Map<string, ResumeTarget>();
+	const mismatched: string[][] = [];
+	for (const ids of resumableGroups(items)) {
+		const group = ids.map((id) => byId.get(id)!);
+		const c = sameStorage(settings, group[0]!);
+		if (!c || !group.every((i) => sameStorage(settings, i) === c)) {
+			mismatched.push(ids);
+			continue;
+		}
+		const t = ready.get(c.id) ?? { connection: c, groups: [] };
+		t.groups.push(ids);
+		ready.set(c.id, t);
+	}
+	return { ready: [...ready.values()], mismatched };
+}
+
+export interface ResumeDeps extends Pick<RunDeps, 'settings' | 'pending' | 'client' | 'timeoutMs' | 'signal' | 'authGeneration' | 'sourceChanged' | 'readSource' | 'sleep' | 'random' | 'now' | 'newId'> {
+	encoder: Encoder;
+}
+
+export interface ResumeResult {
+	connectionId: string;
+	results: ItemResult[];
+	aborted?: AbortCause;
+}
+
+/**
+ * 7-4: resumes the groups of one connection after the user confirmed them. The checks are those of a job: the
+ * connection and authentication as confirmed, inside every checkpoint. Bytes are rebuilt from the source files
+ * and must hash to the recorded sentSha256 (6-5 step 2); otherwise nothing is re-sent.
+ */
+export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration'>, deps: ResumeDeps): Promise<ResumeResult> {
+	const id = target.connection.id;
+	const watch = watchAbort(deps.settings, deps.signal, id, confirmed.connection);
+	const sourceBytes = async (path: string, sha: string) => {
+		if (deps.sourceChanged(path)) return undefined;
+		const bytes = await deps.readSource(path);
+		return bytes !== undefined && !deps.sourceChanged(path) && sha256Hex(bytes) === sha ? bytes : undefined;
+	};
+	const results: ItemResult[] = [];
+	let notStarted: string | undefined;
+	try {
+		for (const ids of target.groups) {
+			const skip = (reason?: string) => results.push(...ids.map((i) => ({ id: i, outcome: 'stopped' as const, ...(reason ? { reason } : {}) })));
+			if (watch.signal.aborted || notStarted) {
+				skip(notStarted ?? 'aborted');
+				continue;
+			}
+			let client: UploaderDeps['client'];
+			try {
+				client = await deps.client(watch.signal);
+			} catch {
+				notStarted = watch.signal.aborted ? 'aborted' : 'credentials';
+				skip(notStarted);
+				continue;
+			}
+			const uploader: UploaderDeps = {
+				pending: deps.pending,
+				settings: deps.settings,
+				client,
+				signal: watch.signal,
+				timeoutMs: deps.timeoutMs,
+				check: jobCheck(deps, id, confirmed),
+				sourceUnchanged: async (item) => (await sourceBytes(item.sourcePath, item.sourceSha256)) !== undefined,
+				rebuild: async (items) => {
+					let out: Uint8Array | undefined;
+					for (const item of items) {
+						const source = await sourceBytes(item.sourcePath, item.sourceSha256);
+						const bytes = source && (await rebuildBytes(source, item, deps.encoder));
+						if (!bytes) return undefined;
+						out ??= bytes;
+					}
+					return out;
+				},
+				sleep: deps.sleep,
+				random: () => deps.random(),
+				now: () => deps.now(),
+				newId: () => deps.newId(),
+			};
+			results.push(...(await resumeGroup(ids, uploader)));
+		}
+	} finally {
+		watch.dispose();
+	}
+	const cause = watch.cause();
+	return { connectionId: id, results, ...(cause ? { aborted: cause } : {}) };
+}
+
+export type ResumeStop = { stop: 'busy' } | { stop: 'pending-not-ready' } | { stop: 'nothing'; mismatched: number } | { stop: 'cancelled' };
+
+export interface ResumeCommandDeps {
+	lock: JobLock;
+	pending: Pick<PendingStore, 'status' | 'items'>;
+	settings: Pick<SettingsStore, 'current'>;
+	authGeneration(connectionId: string): number | undefined;
+	/** The confirmation screen (I13: a previous session's confirmation is not enough). */
+	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
+	run(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration'>): Promise<ResumeResult>;
+}
+
+export async function resumeCommand(deps: ResumeCommandDeps): Promise<ResumeStop | { done: ResumeResult[]; mismatched: number }> {
+	const release = deps.lock.acquire();
+	if (!release) return { stop: 'busy' };
+	try {
+		if (deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
+		const { ready, mismatched } = resumeTargets(deps.pending.items, deps.settings.current);
+		if (ready.length === 0) return { stop: 'nothing', mismatched: mismatched.length };
+		// Recorded as the screen opens, as for an upload.
+		const confirmed = new Map(ready.map((t) => [t.connection.id, { connection: stableStringify(t.connection), authGeneration: deps.authGeneration(t.connection.id) }]));
+		if (!(await deps.confirm(ready, mismatched.length))) return { stop: 'cancelled' };
+		const done: ResumeResult[] = [];
+		for (const t of ready) done.push(await deps.run(t, confirmed.get(t.connection.id)!));
+		return { done, mismatched: mismatched.length };
+	} finally {
+		release();
+	}
+}
+
+export interface CopyDeps {
+	lock: JobLock;
+	pending: PendingStore;
+	settings: Pick<SettingsStore, 'current' | 'checkpoint'>;
+	copy(text: string): Promise<boolean>;
+}
+
+export type CopyResult =
+	| { stop: 'busy' | 'pending-not-ready' | 'nothing' }
+	| { copied: number; ok: boolean; skipped: { id: string; reason: 'target-mismatch' | 'markdown-check' | 'private-recorded' }[] };
+
+/**
+ * "Copy Markdown" for delivered records (7-4, 6-5 step 4): links to the storage as the connection is now, with
+ * I2 checked again for public links. Records are removed only after the copy succeeded.
+ */
+export async function copyDelivered(deps: CopyDeps): Promise<CopyResult> {
+	const release = deps.lock.acquire();
+	if (!release) return { stop: 'busy' };
+	try {
+		if (deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
+		const delivered = deps.pending.items.filter((i) => i.state === 'delivered');
+		if (delivered.length === 0) return { stop: 'nothing' };
+		const skipped: Extract<CopyResult, { copied: number }>['skipped'] = [];
+		const lines: string[] = [];
+		const ready: DeepReadonly<PendingItem>[] = [];
+		const blocked = await deps.settings
+			.checkpoint((s) => {
+				const recorded = new Set(s.privateFiles);
+				return new Set(delivered.filter((i) => i.classification === 'public' && (recorded.has(i.sourceSha256) || recorded.has(i.sentSha256))).map((i) => i.id));
+			})
+			.catch(() => new Set(delivered.filter((i) => i.classification === 'public').map((i) => i.id)));
+		for (const item of delivered) {
+			if (blocked.has(item.id)) {
+				skipped.push({ id: item.id, reason: 'private-recorded' });
+				continue;
+			}
+			const c = sameStorage(deps.settings.current, item);
+			if (!c) {
+				skipped.push({ id: item.id, reason: 'target-mismatch' });
+				continue;
+			}
+			const mds = recordMarkdown(item, c);
+			if (!mds) {
+				skipped.push({ id: item.id, reason: 'markdown-check' });
+				continue;
+			}
+			for (const md of mds) if (!lines.includes(md)) lines.push(md);
+			ready.push(item);
+		}
+		const privateRecorded = skipped.filter((s) => s.reason === 'private-recorded').map((s) => s.id);
+		if (privateRecorded.length > 0) await deps.pending.update(privateRecorded, { state: 'unresolved', reason: 'private-recorded' });
+		if (ready.length === 0) return { copied: 0, ok: true, skipped };
+		const ok = await deps.copy(lines.join('\n'));
+		if (ok) await deps.pending.removeCompleted(ready.map((i) => i.id));
+		return { copied: ok ? ready.length : 0, ok, skipped };
+	} finally {
+		release();
+	}
+}
+
+/** Runs a record operation (discard, takeover, reset) under the job lock (7-6). */
+export async function withLock<T>(lock: JobLock, fn: () => Promise<T>): Promise<T | 'busy'> {
+	const release = lock.acquire();
+	if (!release) return 'busy';
+	try {
+		return await fn();
+	} finally {
+		release();
+	}
 }

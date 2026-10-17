@@ -4,6 +4,10 @@ import { t, type MessageKey } from '../i18n';
 import { confirm } from '../ui/ConfirmModal';
 import { ConnectionEditModal } from '../ui/ConnectionEditModal';
 import type VaultS3BridgePlugin from '../main';
+import { resumableGroups } from '../upload/job';
+import type { OtherDeviceFile } from '../upload/pending';
+import { STATE_KEY } from '../upload/present';
+import { copyRecords, discardOtherRecords, discardRecord, resetDamagedRecords, resumeRecords, takeOverRecords } from '../ui/pendingFlow';
 import { connectionState, resolveAlias } from './registry';
 import { validateProxyUrl } from './validate';
 import type { StorageConnection } from './types';
@@ -26,6 +30,9 @@ function describeTarget(target: string): string {
 }
 
 export class VaultS3BridgeSettingTab extends PluginSettingTab {
+	/** Record files of other devices, read when the tab is shown (7-5). */
+	private others: OtherDeviceFile[] = [];
+
 	constructor(
 		app: App,
 		private readonly plugin: VaultS3BridgePlugin,
@@ -79,6 +86,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				visible: missing.length > 0,
 				items: missing.map(({ alias, target }) => ({ name: `${alias} → ${describeTarget(target)}`, desc: t('settings.missingDesc') })),
 			},
+			...this.pendingDefinitions(),
 			{
 				type: 'group',
 				heading: t('settings.preview'),
@@ -120,6 +128,82 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				],
 			},
 		];
+	}
+
+	/** 7-4 and 7-5: this device's records, and the files of other devices. */
+	private pendingDefinitions(): SettingDefinitionItem<ControlKey>[] {
+		const pending = this.plugin.pending;
+		if (!pending) return [];
+		const host = this.plugin.uploadHost;
+		const ready = pending.status === 'ready';
+		const items = pending.items;
+		const run = (op: () => Promise<void>): void => {
+			void op().finally(() => void this.refreshPending());
+		};
+		// The other devices' files are read asynchronously; the tab is rendered again only if they changed.
+		void this.refreshPending(false);
+		const aliasOf = (id: string, target: string) => this.plugin.settings.connections.find((c) => c.id === id)?.alias ?? describeTarget(target);
+		return [
+			{
+				type: 'list',
+				heading: t('settings.pending'),
+				visible: ready,
+				emptyState: t('settings.pendingEmpty'),
+				onDelete: (index) => {
+					const item = items[index];
+					if (item) run(() => discardRecord(host, pending, item));
+				},
+				items: items.map((i) => ({
+					name: i.sourcePath,
+					desc: [t(STATE_KEY[i.state]), aliasOf(i.connectionId, i.target), i.notePath, i.updatedAt.slice(0, 16).replace('T', ' ')].join(' · '),
+				})),
+			},
+			{
+				type: 'group',
+				heading: ready ? undefined : t('settings.pending'),
+				visible: !ready || items.length > 0 || this.others.length > 0,
+				items: [
+					{
+						name: t('settings.pendingDamaged'),
+						desc: t('settings.pendingDamagedDesc'),
+						visible: pending.status === 'damaged',
+						action: () => run(() => resetDamagedRecords(host, pending)),
+					},
+					{
+						name: t('settings.pendingResume'),
+						desc: t('settings.pendingResumeDesc'),
+						visible: ready && resumableGroups(items).length > 0,
+						action: () => run(() => resumeRecords(host, pending)),
+					},
+					{
+						name: t('settings.pendingCopy'),
+						desc: t('settings.pendingCopyDesc'),
+						visible: ready && items.some((i) => i.state === 'delivered'),
+						action: () => run(() => copyRecords(host, pending)),
+					},
+					...this.others.flatMap((o) => {
+						const name = 'damaged' in o ? t('settings.pendingOtherDamaged') : t('settings.pendingOther', { n: String(o.count) });
+						return [
+							{
+								name: `${name} — ${t('settings.pendingTakeOver')}`,
+								desc: t('settings.pendingOtherDesc'),
+								visible: ready && !('damaged' in o),
+								action: () => run(() => takeOverRecords(host, pending, o.deviceId)),
+							},
+							{ name: `${name} — ${t('settings.pendingOtherDiscard')}`, action: () => run(() => discardOtherRecords(host, pending, o.deviceId)) },
+						];
+					}),
+				],
+			},
+		];
+	}
+
+	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
+	private async refreshPending(always = true): Promise<void> {
+		const others = (await this.plugin.pending?.others()) ?? [];
+		const changed = JSON.stringify(others) !== JSON.stringify(this.others);
+		this.others = others;
+		if (always || changed) this.update();
 	}
 
 	private connectionItem(connection: StorageConnection) {

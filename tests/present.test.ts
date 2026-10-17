@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryEntry } from '../src/settings/types';
 import type { FileResult, JobPlan, JobResult, PlannedGroup } from '../src/upload/job';
-import { formatBytes, pendingLine, planView, resultLines, stopLine } from '../src/upload/present';
+import { copyLines, formatBytes, pendingLine, planView, resultLines, resumeLines, STATE_KEY, stopLine } from '../src/upload/present';
 import { newItem } from './fixtures/pendingItems';
 
 const A = 'a'.repeat(64);
@@ -178,4 +178,50 @@ describe('pendingLine (7-4)', () => {
 
 it('formatBytes', () => {
 	expect([formatBytes(10), formatBytes(2048), formatBytes(3 * 1024 * 1024)]).toEqual(['10 B', '2.0 KB', '3.0 MB']);
+});
+
+const ks = (lines: { key: string; params?: Record<string, string> }[]) => lines.map((l) => (l.params?.n ? `${l.key}:${l.params.n}` : l.key));
+
+describe('records (7-4)', () => {
+	it('labels come from the state; putting and indeterminate are both "result unknown" (D10)', () => {
+		expect(STATE_KEY.putting).toBe('pending.state.unknown');
+		expect(STATE_KEY.indeterminate).toBe('pending.state.unknown');
+		expect(STATE_KEY.delivered).toBe('pending.state.delivered');
+		expect(STATE_KEY.recorded).toBe('pending.state.recorded');
+	});
+
+	it('resumeLines', () => {
+		expect(ks(resumeLines({ stop: 'busy' }))).toEqual(['upload.stop.busy']);
+		expect(ks(resumeLines({ stop: 'cancelled' }))).toEqual([]);
+		expect(ks(resumeLines({ stop: 'nothing', mismatched: 0 }))).toEqual(['pending.resume.nothing:0']);
+		expect(ks(resumeLines({ stop: 'nothing', mismatched: 2 }))).toEqual(['pending.resume.mismatched:2']);
+		const done = {
+			done: [
+				{ connectionId: 'c1', results: [{ id: 'a', outcome: 'delivered' as const }, { id: 'b', outcome: 'unresolved' as const }] },
+				{ connectionId: 'c2', results: [{ id: 'c', outcome: 'delivered' as const }], aborted: 'stop' as const },
+			],
+			mismatched: 1,
+		};
+		expect(ks(resumeLines(done))).toEqual(['upload.result.abortedStop', 'pending.resume.delivered:2', 'upload.result.unresolved:1', 'pending.resume.mismatched:1']);
+	});
+
+	it('copyLines', () => {
+		expect(ks(copyLines({ stop: 'nothing' }))).toEqual(['pending.copy.nothing']);
+		expect(ks(copyLines({ stop: 'busy' }))).toEqual(['upload.stop.busy']);
+		expect(ks(copyLines({ stop: 'pending-not-ready' }))).toEqual(['upload.stop.pendingNotReady']);
+		expect(
+			ks(
+				copyLines({
+					copied: 2,
+					ok: true,
+					skipped: [
+						{ id: 'x', reason: 'private-recorded' },
+						{ id: 'y', reason: 'private-recorded' },
+						{ id: 'z', reason: 'target-mismatch' },
+					],
+				}),
+			),
+		).toEqual(['pending.copy.copied:2', 'pending.copy.privateRecorded:2', 'pending.copy.targetMismatch:1']);
+		expect(ks(copyLines({ copied: 0, ok: false, skipped: [] }))).toEqual(['pending.copy.failed']);
+	});
 });

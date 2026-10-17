@@ -31,11 +31,14 @@ export function altFor(input: Pick<MarkdownInput, 'syntax' | 'target' | 'fileBas
 }
 
 export function buildMarkdown(input: MarkdownInput): string {
-	const { syntax, target } = input;
-	const alt = altFor(input);
-	const url = target.classification === 'public' ? publicUrl(target.publicBaseUrl, input.key) : formatReference(target.alias, input.key);
-	const bar = input.inTable ? '\\|' : '|';
-	return `![${alt}${syntax.size ? `${bar}${syntax.size}` : ''}](${url})`;
+	return markdownFor({ alt: altFor(input), size: input.syntax.size, inTable: input.inTable }, input.target, input.key);
+}
+
+/** From an alt text already made safe (as stored in a resume record's occurrence, 7-1). */
+export function markdownFor(o: { alt: string; size?: string; inTable: boolean }, target: Target, key: string): string {
+	const url = target.classification === 'public' ? publicUrl(target.publicBaseUrl, key) : formatReference(target.alias, key);
+	const bar = o.inTable ? '\\|' : '|';
+	return `![${o.alt}${o.size ? `${bar}${o.size}` : ''}](${url})`;
 }
 
 /** 9-3 check: the generated Markdown is exactly one image, and the key comes back out of its URL or reference. */

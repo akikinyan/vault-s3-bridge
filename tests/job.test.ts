@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { profileOf } from '../src/settings/device';
-import { addPrivateFilesOp, appendHistoryOp, saveConnectionOp } from '../src/settings/ops';
+import { addPrivateFilesOp, appendHistoryOp, deleteConnectionOp, saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore } from '../src/settings/store';
 import type { HistoryEntry, StorageConnection } from '../src/settings/types';
 import type { DecodedImage, Encoder } from '../src/upload/convert';
@@ -10,6 +10,7 @@ import { parseEmbeds } from '../src/upload/detect';
 import {
 	type CommandDeps,
 	confirmedValues,
+	copyDelivered,
 	JobLock,
 	type JobPlan,
 	prepareJob,
@@ -18,6 +19,10 @@ import {
 	runJob,
 	inExcludedFolder,
 	resumableGroups,
+	resumeCommand,
+	type ResumeDeps,
+	resumeJob,
+	resumeTargets,
 	type SourceFile,
 	uploadCommand,
 } from '../src/upload/job';
@@ -667,5 +672,235 @@ describe('resumableGroups (7-4)', () => {
 			storedItem('e', { groupId: 'g3', state: 'stopped' }),
 		];
 		expect(resumableGroups(items)).toEqual([['a', 'c'], ['e']]);
+	});
+});
+
+// --- resuming, copying (7-4) -----------------------------------------------------
+
+/** A job stopped by the stop button while its Put was in flight: the record stays as stopped and uncertain. */
+async function stoppedJob(w: World, note = '![[a.png]]', connection: StorageConnection = priv) {
+	const p = await plan(w, note, connection);
+	w.s3.on('put', (_key, signal) => {
+		w.abort.abort();
+		return Promise.reject(Object.assign(new Error('aborted'), { name: signal?.aborted ? 'AbortError' : 'Unexpected' }));
+	});
+	await runJob(p, confirm(w, connection), w.run);
+	w.s3.calls.length = 0;
+	return p;
+}
+
+const resumeDeps = (w: World, signal = new AbortController().signal): ResumeDeps => ({ ...w.run, signal, encoder: w.encoder });
+const resumeCmd = (w: World, answer = true, lock = new JobLock()) => {
+	const shown: string[][][] = [];
+	return {
+		shown,
+		run: () =>
+			resumeCommand({
+				lock,
+				pending: w.pending,
+				settings: w.settings,
+				authGeneration: w.run.authGeneration,
+				confirm: (targets) => {
+					shown.push(targets.map((t) => t.groups.flat()));
+					return Promise.resolve(answer);
+				},
+				run: (t, c) => resumeJob(t, c, resumeDeps(w)),
+			}),
+	};
+};
+const copyDeps = (w: World, lock = new JobLock()) => ({ lock, pending: w.pending, settings: w.settings, copy: w.run.copy });
+
+describe('resume (7-4, 6-5)', () => {
+	it('confirms, then Heads the recorded key and re-sends the rebuilt bytes; the record ends delivered, waiting for the copy', async () => {
+		const w = await world([priv, pub], '![[a.png]]');
+		await stoppedJob(w);
+		expect(w.pending.items.map((i) => [i.state, i.uncertain])).toEqual([['stopped', true]]);
+		const cmd = resumeCmd(w);
+		const r = await cmd.run();
+		expect(cmd.shown).toEqual([[[w.pending.items[0]!.id]]]);
+		expect(w.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+		expect('done' in r && r.done[0]!.results.map((x) => x.outcome)).toEqual(['delivered']);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+		// Not applied to the note (no snapshot, D7); copying the Markdown removes the record.
+		expect(w.disk.text).toBe('![[a.png]]');
+		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.copied).toEqual(['![a](s3-bridge://work/k/a.png)']);
+		expect(w.pending.items).toEqual([]);
+	});
+
+	it('cancelled on the screen: nothing is requested; another operation holding the lock: not even shown', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		expect(await resumeCmd(w, false).run()).toEqual({ stop: 'cancelled' });
+		const lock = new JobLock();
+		const release = lock.acquire()!;
+		const busy = resumeCmd(w, true, lock);
+		expect(await busy.run()).toEqual({ stop: 'busy' });
+		expect(busy.shown).toEqual([]);
+		release();
+		expect(w.s3.calls).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['stopped']);
+	});
+
+	it('a source changed since the record is not re-sent: unresolved', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		w.files.set('img/a.png', PNG_B);
+		await resumeCmd(w).run();
+		expect(w.s3.ops()).toEqual(['head:k/a.png']);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['unresolved']);
+	});
+
+	it('the object arrived after all: found by Head, nothing re-sent', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		w.s3.objects.set('k/a.png', checksumOf(sha256Hex(PNG_A)));
+		await resumeCmd(w).run();
+		expect(w.s3.ops()).toEqual(['head:k/a.png']);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('the recorded storage no longer matches the connection: not shown, not requested (6-5 step 0)', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		await w.settings.mutate(deleteConnectionOp(priv.id));
+		expect(resumeTargets(w.pending.items, w.settings.current)).toEqual({ ready: [], mismatched: [[w.pending.items[0]!.id]] });
+		const cmd = resumeCmd(w);
+		expect(await cmd.run()).toEqual({ stop: 'nothing', mismatched: 1 });
+		expect(cmd.shown).toEqual([]);
+		expect(w.s3.calls).toEqual([]);
+	});
+
+	it('resumeTargets: a record of another storage, classification or a mixed group is not resumed', async () => {
+		const { storedItem } = await import('./fixtures/pendingItems');
+		const w = await world();
+		const ok = { connectionId: priv.id, target: 'aws:example-private' as const, classification: 'private' as const };
+		const items = [
+			storedItem('a', { ...ok, groupId: 'g1' }),
+			storedItem('b', { ...ok, groupId: 'g2', target: 'aws:elsewhere' }),
+			storedItem('c', { ...ok, groupId: 'g3', classification: 'public' }),
+			storedItem('d', { ...ok, groupId: 'g4' }),
+			storedItem('e', { ...ok, groupId: 'g4', target: 'aws:elsewhere' }),
+		];
+		const r = resumeTargets(items, w.settings.current);
+		expect(r.ready.map((t) => [t.connection.id, t.groups])).toEqual([[priv.id, [['a']]]]);
+		expect(r.mismatched).toEqual([['b'], ['c'], ['d', 'e']]);
+	});
+
+	it('bytes made by another converter version are not re-sent: unresolved, no Put', async () => {
+		const w = await world();
+		await stoppedJob(w, '![[a.png]]', pub);
+		const other: Encoder = { electronVersion: '39.0.0', decode: () => w.encoder.decode() };
+		const target = resumeTargets(w.pending.items, w.settings.current).ready[0]!;
+		const c = w.settings.current.connections.find((x) => x.id === pub.id)!;
+		await resumeJob(target, confirmedValues(c, profileOf(w.settings.device, pub.id)?.generation, 'replace'), { ...resumeDeps(w), encoder: other });
+		expect(w.s3.ops()).toEqual([`head:${w.pending.items[0]!.key}`]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['unresolved']);
+	});
+
+	it('a profile change during the resume aborts the Put in flight and leaves the record uncertain', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		w.s3.on('put', (_key, signal) => {
+			void w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], priv, 'other'));
+			return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+		});
+		const r = await resumeCmd(w).run();
+		expect('done' in r && r.done[0]!.aborted).toBe('auth-changed');
+		// Recover mode keeps the unknown outcome as it is (6-6), for a later resume.
+		expect(w.pending.items.map((i) => [i.state, i.uncertain])).toEqual([['indeterminate', true]]);
+	});
+
+	it('a connection changed between the screen and the first request stops it', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		const r = await resumeCommand({
+			lock: new JobLock(),
+			pending: w.pending,
+			settings: w.settings,
+			authGeneration: w.run.authGeneration,
+			confirm: async () => {
+				await w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, region: 'us-east-1' }, 'p'));
+				return true;
+			},
+			run: (t, c) => resumeJob(t, c, resumeDeps(w)),
+		});
+		expect('done' in r && r.done[0]!.results.map((x) => x.outcome)).toEqual(['stopped']);
+		expect(w.s3.calls).toEqual([]);
+	});
+
+	it('credentials that fail the gate: nothing requested, the record is kept', async () => {
+		const w = await world();
+		await stoppedJob(w);
+		w.credentialsFail = true;
+		const r = await resumeCmd(w).run();
+		expect('done' in r && r.done[0]!.results).toEqual([{ id: w.pending.items[0]!.id, outcome: 'stopped', reason: 'credentials' }]);
+		expect(w.s3.calls).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['stopped']);
+	});
+});
+
+describe('copyDelivered (7-4)', () => {
+	async function deliveredJob(w: World, connection: StorageConnection, note = '![[a.png]]') {
+		w.copyFails = true;
+		await runJob(await plan(w, note, connection), confirm(w, connection, 'copy'), w.run);
+		w.copyFails = false;
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	}
+
+	it('public: uses the connection’s base URL as it is now; a failed copy keeps the record', async () => {
+		const w = await world();
+		await deliveredJob(w, pub);
+		const key = w.pending.items[0]!.key;
+		await w.settings.mutate(saveConnectionOp(w.settings.current.connections[1], { ...pub, publicBaseUrl: 'https://img.example.com' }, 'p'));
+		w.copyFails = true;
+		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: false, skipped: [] });
+		expect(w.pending.items).toHaveLength(1);
+		w.copyFails = false;
+		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.copied).toEqual([`![](https://img.example.com/${key})`]);
+		expect(w.pending.items).toEqual([]);
+	});
+
+	it('public: content recorded as private since is not linked (I2) and becomes unresolved', async () => {
+		const w = await world();
+		await deliveredJob(w, pub);
+		await w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
+		const id = w.pending.items[0]!.id;
+		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'private-recorded' }] });
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => [i.state, i.reason])).toEqual([['unresolved', 'private-recorded']]);
+	});
+
+	it('a connection that no longer points to the recorded storage is not linked', async () => {
+		const w = await world();
+		await deliveredJob(w, priv);
+		await w.settings.mutate(deleteConnectionOp(priv.id));
+		const id = w.pending.items[0]!.id;
+		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'target-mismatch' }] });
+		expect(w.pending.items).toHaveLength(1);
+	});
+
+	it('a file moved to the alternate key is linked at that key', async () => {
+		const w = await world();
+		w.s3.objects.set('k/a.png', checksumOf('0'.repeat(64)));
+		await deliveredJob(w, priv);
+		await copyDelivered(copyDeps(w));
+		expect(w.copied).toEqual([`![a](s3-bridge://work/k/a-${sha256Hex(PNG_A).slice(0, 8)}.png)`]);
+	});
+
+	it('takes the lock; nothing delivered: nothing to do', async () => {
+		const w = await world();
+		expect(await copyDelivered(copyDeps(w))).toEqual({ stop: 'nothing' });
+		const lock = new JobLock();
+		lock.acquire();
+		expect(await copyDelivered(copyDeps(w, lock))).toEqual({ stop: 'busy' });
+	});
+
+	it('keeps the table form of an occurrence and the size', async () => {
+		const w = await world();
+		await deliveredJob(w, priv, '| x |\n|---|\n| ![[a.png\\|300]] |');
+		await copyDelivered(copyDeps(w));
+		expect(w.copied).toEqual(['![a\\|300](s3-bridge://work/k/a.png)']);
 	});
 });

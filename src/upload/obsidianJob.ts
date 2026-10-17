@@ -14,7 +14,7 @@ import { CONNECT_TIMEOUT_MS, type StorageConnection } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
 import type { DecodedImage, Encoder } from './convert';
 import { type CacheView, type DetectSource, type Detection, detectEmbeds } from './detect';
-import { type CommandDeps, type JobLock, type JobPlan, runJob, type SourceFile } from './job';
+import { type CommandDeps, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
 import type { PendingStore } from './pending';
 import type { EditorLike, NoteAccess } from './rewrite';
 import { uploadClient } from './s3';
@@ -253,25 +253,72 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 					signal: stop,
 					authGeneration,
 					sourceChanged: (path) => watch.changed(path),
-					readSource: async (path) => {
-						const f = app.vault.getFileByPath(path);
-						return f ? new Uint8Array(await app.vault.readBinary(f)) : undefined;
-					},
+					readSource: (path) => readVaultFile(app, path),
 					note,
 					copy: copyToClipboard,
-					sleep: (ms, signal) =>
-						new Promise<void>((resolve, reject) => {
-							if (signal.aborted) return reject(new Error('aborted'));
-							const timer = window.setTimeout(() => {
-								signal.removeEventListener('abort', onAbort);
-								resolve();
-							}, ms);
-							const onAbort = () => {
-								window.clearTimeout(timer);
-								reject(new Error('aborted'));
-							};
-							signal.addEventListener('abort', onAbort, { once: true });
-						}),
+					sleep: abortableSleep,
+					random: () => Math.random(),
+					now: () => new Date(),
+					newId: () => crypto.randomUUID(),
+				});
+			} finally {
+				clients.destroy();
+			}
+		},
+	};
+	return { deps, dispose: () => watch.dispose() };
+}
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		if (signal.aborted) return reject(new Error('aborted'));
+		const timer = window.setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			window.clearTimeout(timer);
+			reject(new Error('aborted'));
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
+async function readVaultFile(app: App, path: string): Promise<Uint8Array | undefined> {
+	const f = app.vault.getFileByPath(path);
+	return f ? new Uint8Array(await app.vault.readBinary(f)) : undefined;
+}
+
+export interface ResumeUi {
+	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
+	stop: AbortSignal;
+}
+
+/** Everything resumeCommand needs. Source changes are watched from now on; call dispose() when it has finished. */
+export function resumeCommandDeps(host: UploadHost, pending: PendingStore, ui: ResumeUi): { deps: ResumeCommandDeps; dispose(): void } {
+	const { app, store } = host;
+	const watch = watchSources(app);
+	const authGeneration = (id: string) => profileOf(store.device, id)?.generation;
+	const deps: ResumeCommandDeps = {
+		lock: host.lock,
+		pending,
+		settings: store,
+		authGeneration,
+		confirm: (targets, mismatched) => ui.confirm(targets, mismatched),
+		run: async (target, confirmed) => {
+			const clients = jobClients(store, target.connection.id);
+			try {
+				return await resumeJob(target, confirmed, {
+					settings: store,
+					pending,
+					client: (signal) => clients.client(signal),
+					timeoutMs: store.current.network.timeoutMs,
+					signal: AbortSignal.any([host.unload, ui.stop]),
+					authGeneration,
+					sourceChanged: (path) => watch.changed(path),
+					readSource: (path) => readVaultFile(app, path),
+					encoder: canvasEncoder,
+					sleep: abortableSleep,
 					random: () => Math.random(),
 					now: () => new Date(),
 					newId: () => crypto.randomUUID(),
