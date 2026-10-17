@@ -60,3 +60,33 @@ describe('validateProxyUrl', () => {
 		expect(validateProxyUrl('not a url')).toBe('proxy-invalid');
 	});
 });
+
+describe('createRequestHandler — timeouts', () => {
+	const silentServer = async () => {
+		const { createServer } = await import('node:http');
+		const server = createServer(() => undefined); // accepts, never answers
+		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+		return { server, port: (server.address() as { port: number }).port };
+	};
+	const request = (port: number) =>
+		({ protocol: 'http:', hostname: '127.0.0.1', port, method: 'GET', path: '/', headers: {}, query: {} }) as unknown as Parameters<
+			ReturnType<typeof createRequestHandler>['handle']
+		>[0];
+
+	it('fails a request the server never answers after requestTimeout, and honours a per-request timeout', async () => {
+		const { server, port } = await silentServer();
+		try {
+			const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 200 });
+			let t = Date.now();
+			await expect(handler.handle(request(port))).rejects.toMatchObject({ name: 'TimeoutError' });
+			expect(Date.now() - t).toBeLessThan(1500);
+			t = Date.now();
+			await expect(handler.handle(request(port), { requestTimeout: 600 })).rejects.toMatchObject({ name: 'TimeoutError' });
+			expect(Date.now() - t).toBeGreaterThanOrEqual(550);
+			handler.destroy();
+		} finally {
+			server.closeAllConnections();
+			server.close();
+		}
+	});
+});

@@ -62,5 +62,7 @@ export function createRequestHandler(options: RequestHandlerOptions): NodeHttpHa
 		httpsAgent,
 		connectionTimeout: options.connectionTimeoutMs,
 		requestTimeout: options.requestTimeoutMs,
+		// Without this, @smithy/node-http-handler only logs a warning when requestTimeout passes and keeps waiting.
+		throwOnRequestTimeout: true,
 	});
 }
