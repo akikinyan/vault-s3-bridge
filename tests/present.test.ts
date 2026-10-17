@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryEntry } from '../src/settings/types';
 import type { FileResult, JobPlan, JobResult, PlannedGroup } from '../src/upload/job';
-import { copyLines, formatBytes, pendingLine, planView, resultLines, resumeLines, STATE_KEY, stopLine } from '../src/upload/present';
+import { copyLines, formatBytes, sizeChange, pendingLine, planView, resultLines, resumeLines, STATE_KEY, stopLine } from '../src/upload/present';
 import { newItem } from './fixtures/pendingItems';
 
 const A = 'a'.repeat(64);
@@ -224,4 +224,8 @@ describe('records (7-4)', () => {
 		).toEqual(['pending.copy.copied:2', 'pending.copy.privateRecorded:2', 'pending.copy.targetMismatch:1']);
 		expect(ks(copyLines({ copied: 0, ok: false, skipped: [] }))).toEqual(['pending.copy.failed']);
 	});
+});
+
+it('sizeChange', () => {
+	expect([sizeChange(1000, 700), sizeChange(1000, 1120), sizeChange(1000, 1000), sizeChange(1000, 1004), sizeChange(0, 0), sizeChange(0, 5)]).toEqual(['−30%', '+12%', '±0%', '±0%', '±0%', '+∞']);
 });

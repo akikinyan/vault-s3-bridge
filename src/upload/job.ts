@@ -842,15 +842,16 @@ export type CopyResult =
 	| { copied: number; ok: boolean; skipped: { id: string; reason: 'target-mismatch' | 'markdown-check' | 'private-recorded' }[] };
 
 /**
- * "Copy Markdown" for delivered records (7-4, 6-5 step 4): links to the storage as the connection is now, with
- * I2 checked again for public links. Records are removed only after the copy succeeded.
+ * "Copy Markdown" for the delivered records of one note (7-4, 6-5 step 4), so the lines can be pasted where they
+ * belong: links to the storage as the connection is now, with I2 checked again for public links. Records are
+ * removed only after the copy succeeded.
  */
-export async function copyDelivered(deps: CopyDeps): Promise<CopyResult> {
+export async function copyDelivered(deps: CopyDeps, notePath: string): Promise<CopyResult> {
 	const release = deps.lock.acquire();
 	if (!release) return { stop: 'busy' };
 	try {
 		if (deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
-		const delivered = deps.pending.items.filter((i) => i.state === 'delivered');
+		const delivered = deps.pending.items.filter((i) => i.state === 'delivered' && i.notePath === notePath);
 		if (delivered.length === 0) return { stop: 'nothing' };
 		const skipped: Extract<CopyResult, { copied: number }>['skipped'] = [];
 		const lines: string[] = [];

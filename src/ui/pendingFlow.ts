@@ -71,8 +71,8 @@ export async function resumeRecords(host: UploadHost, pending: PendingStore): Pr
 	}
 }
 
-export async function copyRecords(host: UploadHost, pending: PendingStore): Promise<void> {
-	notify(copyLines(await copyDelivered({ lock: host.lock, pending, settings: host.store, copy: copyToClipboard })));
+export async function copyRecords(host: UploadHost, pending: PendingStore, notePath: string): Promise<void> {
+	notify(copyLines(await copyDelivered({ lock: host.lock, pending, settings: host.store, copy: copyToClipboard }, notePath)));
 }
 
 async function locked(host: UploadHost, op: () => Promise<PendingResult>): Promise<void> {

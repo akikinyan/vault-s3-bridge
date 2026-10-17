@@ -708,6 +708,7 @@ const resumeCmd = (w: World, answer = true, lock = new JobLock()) => {
 			}),
 	};
 };
+const NOTE = 'notes/日報.md';
 const copyDeps = (w: World, lock = new JobLock()) => ({ lock, pending: w.pending, settings: w.settings, copy: w.run.copy });
 
 describe('resume (7-4, 6-5)', () => {
@@ -723,7 +724,7 @@ describe('resume (7-4, 6-5)', () => {
 		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
 		// Not applied to the note (no snapshot, D7); copying the Markdown removes the record.
 		expect(w.disk.text).toBe('![[a.png]]');
-		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
 		expect(w.copied).toEqual(['![a](s3-bridge://work/k/a.png)']);
 		expect(w.pending.items).toEqual([]);
 	});
@@ -854,10 +855,10 @@ describe('copyDelivered (7-4)', () => {
 		const key = w.pending.items[0]!.key;
 		await w.settings.mutate(saveConnectionOp(w.settings.current.connections[1], { ...pub, publicBaseUrl: 'https://img.example.com' }, 'p'));
 		w.copyFails = true;
-		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: false, skipped: [] });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: false, skipped: [] });
 		expect(w.pending.items).toHaveLength(1);
 		w.copyFails = false;
-		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
 		expect(w.copied).toEqual([`![](https://img.example.com/${key})`]);
 		expect(w.pending.items).toEqual([]);
 	});
@@ -867,7 +868,7 @@ describe('copyDelivered (7-4)', () => {
 		await deliveredJob(w, pub);
 		await w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
 		const id = w.pending.items[0]!.id;
-		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'private-recorded' }] });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'private-recorded' }] });
 		expect(w.copied).toEqual([]);
 		expect(w.pending.items.map((i) => [i.state, i.reason])).toEqual([['unresolved', 'private-recorded']]);
 	});
@@ -877,7 +878,7 @@ describe('copyDelivered (7-4)', () => {
 		await deliveredJob(w, priv);
 		await w.settings.mutate(deleteConnectionOp(priv.id));
 		const id = w.pending.items[0]!.id;
-		expect(await copyDelivered(copyDeps(w))).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'target-mismatch' }] });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'target-mismatch' }] });
 		expect(w.pending.items).toHaveLength(1);
 	});
 
@@ -885,22 +886,30 @@ describe('copyDelivered (7-4)', () => {
 		const w = await world();
 		w.s3.objects.set('k/a.png', checksumOf('0'.repeat(64)));
 		await deliveredJob(w, priv);
-		await copyDelivered(copyDeps(w));
+		await copyDelivered(copyDeps(w), NOTE);
 		expect(w.copied).toEqual([`![a](s3-bridge://work/k/a-${sha256Hex(PNG_A).slice(0, 8)}.png)`]);
+	});
+
+	it('copies the records of one note only; the others stay', async () => {
+		const w = await world();
+		await deliveredJob(w, priv);
+		expect(await copyDelivered(copyDeps(w), 'notes/other.md')).toEqual({ stop: 'nothing' });
+		expect(w.pending.items).toHaveLength(1);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toMatchObject({ copied: 1 });
 	});
 
 	it('takes the lock; nothing delivered: nothing to do', async () => {
 		const w = await world();
-		expect(await copyDelivered(copyDeps(w))).toEqual({ stop: 'nothing' });
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ stop: 'nothing' });
 		const lock = new JobLock();
 		lock.acquire();
-		expect(await copyDelivered(copyDeps(w, lock))).toEqual({ stop: 'busy' });
+		expect(await copyDelivered(copyDeps(w, lock), NOTE)).toEqual({ stop: 'busy' });
 	});
 
 	it('keeps the table form of an occurrence and the size', async () => {
 		const w = await world();
 		await deliveredJob(w, priv, '| x |\n|---|\n| ![[a.png\\|300]] |');
-		await copyDelivered(copyDeps(w));
+		await copyDelivered(copyDeps(w), NOTE);
 		expect(w.copied).toEqual(['![a\\|300](s3-bridge://work/k/a.png)']);
 	});
 });

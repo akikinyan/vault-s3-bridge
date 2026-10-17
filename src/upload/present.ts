@@ -225,3 +225,10 @@ export function copyLines(r: CopyResult): Line[] {
 	for (const [key, n] of by) lines.push({ key, params: { n: String(n) } });
 	return lines;
 }
+
+/** 11-2: how much the bytes sent differ from the original, e.g. "-30%" or "+12%". */
+export function sizeChange(from: number, to: number): string {
+	if (from === 0) return to === 0 ? '±0%' : '+∞';
+	const pct = Math.round(((to - from) / from) * 100);
+	return pct === 0 ? '±0%' : `${pct > 0 ? '+' : '−'}${Math.abs(pct)}%`;
+}

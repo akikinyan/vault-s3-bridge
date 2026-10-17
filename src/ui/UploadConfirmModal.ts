@@ -1,6 +1,6 @@
 import { type App, Modal, Setting } from 'obsidian';
 import { t, tDynamic } from '../i18n';
-import { formatBytes, type PlanView, type RowStatus } from '../upload/present';
+import { formatBytes, type PlanView, type RowStatus, sizeChange } from '../upload/present';
 
 const STATUS_KEY = {
 	new: 'upload.status.new',
@@ -34,7 +34,7 @@ export function confirmUpload(app: App, view: PlanView, preview: boolean): Promi
 					const box = el.createDiv({ cls: 'vault-s3-bridge-upload-row' });
 					box.createDiv({ text: row.sourcePath, cls: 'vault-s3-bridge-upload-path' });
 					const meta = box.createDiv({ cls: 'setting-item-description' });
-					meta.createSpan({ text: `${t(STATUS_KEY[row.status])} · ${t('upload.confirm.size', { from: formatBytes(row.sourceSize), to: formatBytes(row.sentSize) })}` });
+					meta.createSpan({ text: `${t(STATUS_KEY[row.status])} · ${t('upload.confirm.size', { from: formatBytes(row.sourceSize), to: formatBytes(row.sentSize), change: sizeChange(row.sourceSize, row.sentSize) })}` });
 					box.createDiv({ cls: 'setting-item-description' }).createEl('code', { text: row.key });
 					for (const md of row.markdown) box.createDiv().createEl('code', { text: md });
 					for (const w of row.warnings) box.createDiv({ cls: 'mod-warning', text: `⚠ ${t(w === 'public-copy-remains' ? 'upload.warning.publicCopyRemains' : 'skip.unknown')}` });

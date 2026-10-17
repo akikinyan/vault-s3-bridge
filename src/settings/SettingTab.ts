@@ -204,12 +204,13 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 						visible: ready && resumableGroups(items).length > 0,
 						action: () => run(() => resumeRecords(host, pending)),
 					},
-					{
-						name: t('settings.pendingCopy'),
+					// One copy per note: the lines go back into the note they came from.
+					...[...new Set(items.filter((i) => i.state === 'delivered').map((i) => i.notePath))].map((notePath) => ({
+						name: t('settings.pendingCopy', { note: notePath }),
 						desc: t('settings.pendingCopyDesc'),
-						visible: ready && items.some((i) => i.state === 'delivered'),
-						action: () => run(() => copyRecords(host, pending)),
-					},
+						visible: ready,
+						action: () => run(() => copyRecords(host, pending, notePath)),
+					})),
 					...this.others.flatMap((o) => {
 						const name = 'damaged' in o ? t('settings.pendingOtherDamaged') : t('settings.pendingOther', { n: String(o.count) });
 						return [
