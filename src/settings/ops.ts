@@ -4,7 +4,7 @@ import { setProfile } from './device';
 import { checkConnectionSave } from './connectionSave';
 import { recordConnection, recordsOf, resolveConflict } from './registry';
 import type { Op } from './store';
-import { mergeHistory, normalizeHashes } from './history';
+import { isSha256Hex, mergeHistory, normalizeHashes } from './history';
 import { DEFAULT_SETTINGS, type HistoryEntry, type LanguageSetting, type StorageConnection } from './types';
 import { validateProxyUrl } from './validate';
 import { cloneData } from '../util/deepReadonly';
@@ -96,9 +96,9 @@ export function resetOp(): Op<void> {
 /** I1: records hashes of files about to be sent to private storage. Saved before anything is sent. */
 export function addPrivateFilesOp(hashes: readonly string[]): Op<void> {
 	return (draft) => {
-		const valid = normalizeHashes(hashes);
-		if (valid.length !== hashes.length) return { ok: false, error: [] };
-		draft.privateFiles = normalizeHashes([...draft.privateFiles, ...valid]);
+		// The same hash may come twice (an original sent as is): only invalid values are rejected.
+		if (!hashes.every(isSha256Hex)) return { ok: false, error: [] };
+		draft.privateFiles = normalizeHashes([...draft.privateFiles, ...hashes]);
 		return { ok: true, value: undefined };
 	};
 }

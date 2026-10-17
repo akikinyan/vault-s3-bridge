@@ -179,6 +179,14 @@ describe('SettingsStore — schemaVersion 3 records', () => {
 		expect(io.backupWrites).toHaveLength(1);
 	});
 
+	it('accepts the same hash twice (an original sent as is) but rejects any invalid value', async () => {
+		const store = await storeWith(new FakeIO());
+		expect((await store.mutate(addPrivateFilesOp([h(3), h(3)]))).ok).toBe(true);
+		expect(store.current.privateFiles).toEqual([h(3)]);
+		expect((await store.mutate(addPrivateFilesOp([h(4), 'not-a-hash']))).ok).toBe(false);
+		expect(store.current.privateFiles).toEqual([h(3)]);
+	});
+
 	it('ignores a damaged private-files.json without stopping', async () => {
 		const io = new FakeIO();
 		io.backup = 'not an object';
