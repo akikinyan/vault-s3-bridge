@@ -72,6 +72,8 @@ class Group {
 	private recovered = false;
 	/** Bucket of the connection that passed the last checkpoint; the request is built with it. */
 	private bucket = '';
+	/** sourceSha256 of every item the group started with, excluded ones included (I2 covers them all, 6-0). */
+	private readonly sources: string[];
 
 	constructor(
 		private readonly deps: UploaderDeps,
@@ -82,6 +84,7 @@ class Group {
 		this.live = [...ids];
 		this.mode = mode;
 		this.bytes = bytes;
+		this.sources = this.items().map((i) => i.sourceSha256);
 	}
 
 	private items(): DeepReadonly<PendingItem>[] {
@@ -127,7 +130,7 @@ class Group {
 		// I2: a public group sends nothing if any of its files is recorded as private.
 		if (items[0]?.classification === 'public') {
 			const recorded = new Set(settings.privateFiles);
-			if (items.some((i) => recorded.has(i.sourceSha256) || recorded.has(i.sentSha256))) return 'private-recorded';
+			if (recorded.has(items[0].sentSha256) || this.sources.some((h) => recorded.has(h))) return 'private-recorded';
 		}
 		return undefined;
 	}
@@ -163,9 +166,12 @@ class Group {
 		for (const item of this.items()) if (!(await this.deps.sourceUnchanged(item))) await this.exclude(item, 'changed');
 	}
 
-	/** 6-6: removed when 7-2 allows it; otherwise kept, as unresolved once a Put went out. */
-	private async exclude(item: DeepReadonly<PendingItem>, reason: string): Promise<void> {
-		if (item.putSent || item.uncertain) {
+	/**
+	 * 6-6: a source that changed after a Put went out leaves an object that may hold the old content: unresolved.
+	 * Otherwise (I1 not saved, source changed before any Put) the record goes when 7-2 allows it, else it stops.
+	 */
+	private async exclude(item: DeepReadonly<PendingItem>, reason: 'changed' | 'private-not-saved'): Promise<void> {
+		if (reason === 'changed' && item.putSent) {
 			await this.deps.pending.update([item.id], { state: 'unresolved', reason });
 		} else if (!(await this.deps.pending.removeFailed([item.id])).ok) {
 			await this.deps.pending.update([item.id], { state: 'stopped', reason });

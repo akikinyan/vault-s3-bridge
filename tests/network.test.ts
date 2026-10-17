@@ -89,4 +89,31 @@ describe('createRequestHandler — timeouts', () => {
 			server.close();
 		}
 	});
+	it('does not cut a body that keeps arriving after the headers (a large preview on a slow line)', async () => {
+		const { createServer } = await import('node:http');
+		const server = createServer((_req, res) => {
+			res.writeHead(200, { 'content-type': 'application/octet-stream' });
+			let n = 0;
+			const timer = setInterval(() => {
+				res.write(Buffer.alloc(1024, n));
+				if (++n === 8) {
+					clearInterval(timer);
+					res.end();
+				}
+			}, 150); // about 1.2 s in total, well past the 300 ms request timeout
+		});
+		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+		const port = (server.address() as { port: number }).port;
+		try {
+			const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 300 });
+			const { response } = await handler.handle(request(port));
+			const chunks: Buffer[] = [];
+			for await (const chunk of response.body as AsyncIterable<Buffer>) chunks.push(chunk);
+			expect(Buffer.concat(chunks)).toHaveLength(8 * 1024);
+			handler.destroy();
+		} finally {
+			server.closeAllConnections();
+			server.close();
+		}
+	});
 });

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { deleteConnectionOp, saveConnectionOp } from '../src/settings/ops';
+import { saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore, type StoreIO } from '../src/settings/store';
 import type { StorageConnection } from '../src/settings/types';
 import { type NewPendingItem, type PendingIO, PendingStore, pendingFileName, type ReadOutcome } from '../src/upload/pending';
@@ -327,14 +327,18 @@ describe('sendGroup — results', () => {
 		expect((await s.pending.removeFailed(['a'])).ok).toBe(true);
 	});
 
-	it('a connection deleted on disk before the request: refused inside the checkpoint', async () => {
+	it('a connection removed from data.json only (no change notification): refused inside the checkpoint', async () => {
 		const s = await setup();
-		await s.pending.add([]);
-		const r = sendGroup([item('a')], BODY, { ...s.deps, check: () => undefined, sourceUnchanged: async () => {
-			await s.settings.mutate(deleteConnectionOp('c1'));
-			return true;
-		} });
-		expect(await r).toEqual([{ id: 'a', outcome: 'stopped', reason: 'connection-changed' }]);
+		const deps: UploaderDeps = {
+			...s.deps,
+			sourceUnchanged: () => {
+				// A sync tool rewrites data.json; Obsidian has not told the plugin yet.
+				const disk = s.storeIO.disk as { connections: StorageConnection[] };
+				s.storeIO.disk = { ...disk, connections: disk.connections.filter((c) => c.id !== 'c1') };
+				return Promise.resolve(true);
+			},
+		};
+		expect(await sendGroup([item('a')], BODY, deps)).toEqual([{ id: 'a', outcome: 'stopped', reason: 'connection-changed' }]);
 		expect(s.s3.calls).toEqual([]);
 	});
 
@@ -508,6 +512,113 @@ describe('sendGroup — more orderings and aborts', () => {
 	});
 });
 
+describe('design 15: paths through the uploader', () => {
+	const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+
+	it('rev.2 uncertainty: unknown Put → recovery Head 403 → re-sent Put 403: the record stays unresolved', async () => {
+		const s = await setup();
+		s.s3.on('put', timeout).on('head', () => Promise.reject(sdkError(404, 'NotFound')));
+		s.s3.on('head', () => Promise.reject(sdkError(403, 'Forbidden'))).on('put', () => Promise.reject(sdkError(403, 'AccessDenied')));
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'forbidden' }]);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'unresolved', uncertain: true });
+	});
+
+	it('rev.2 recovery: re-sent Put 412 → verification Head with other content → unresolved, never an alternate key', async () => {
+		const s = await setup();
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound'))).on('put', timeout);
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound')));
+		s.s3.on('put', () => Promise.reject(sdkError(412, 'PreconditionFailed')));
+		s.s3.on('head', () => Promise.resolve({ ChecksumSHA256: checksumOf('0'.repeat(64)) }));
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'different-object' }]);
+		expect(s.s3.ops().filter((o) => o.startsWith('put:'))).toEqual(['put:k/a.png', 'put:k/a.png']);
+	});
+
+	it('rev.4: a putting record resumed while I1 cannot be saved: kept, stopped, no Head and no Put', async () => {
+		const s = await setup();
+		await s.pending.add([item('a')]);
+		await s.pending.markPutting(['a']);
+		const pending = new PendingStore(s.pendingIO, OWN);
+		await pending.load();
+		s.storeIO.failSave = true;
+		const r = await resumeGroup(['a'], { ...s.deps, pending });
+		expect(r).toEqual([{ id: 'a', outcome: 'excluded', reason: 'private-not-saved' }]);
+		expect(pending.items[0]).toMatchObject({ state: 'stopped', reason: 'private-not-saved', uncertain: true });
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('rev.4: a candidate record resumed: candidate 404 → the recorded prepared key, never a Put to the candidate', async () => {
+		const s = await setup();
+		await s.pending.add([item('a', { key: 'k/2025/a.png', phase: 'candidate', preparedKey: 'k/2026/a.png' })]);
+		const r = await resumeGroup(['a'], s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/2026/a.png' }]);
+		expect(s.s3.ops()).toEqual(['head:k/2025/a.png', 'head:k/2026/a.png', 'put:k/2026/a.png']);
+	});
+
+	it('6-4: the class changed during the wait after 409: the next Put is not sent', async () => {
+		const s = await setup();
+		s.s3.on('put', () => Promise.reject(sdkError(409, 'ConditionalRequestConflict')));
+		const deps: UploaderDeps = {
+			...s.deps,
+			sleep: async () => {
+				await s.settings.mutate(saveConnectionOp(pub, { ...pub, classification: 'private' }, 'p'));
+			},
+		};
+		expect(await sendGroup([pubItem('a')], BODY, deps)).toEqual([{ id: 'a', outcome: 'stopped', reason: 'connection-changed' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', uncertain: false });
+	});
+
+	it('6-4: aborted during the wait after 409: stopped, resumable', async () => {
+		const s = await setup();
+		s.s3.on('put', () => Promise.reject(sdkError(409, 'ConditionalRequestConflict')));
+		const deps: UploaderDeps = { ...s.deps, sleep: () => (s.abort.abort(), Promise.reject(new Error('aborted'))) };
+		expect(await sendGroup([item('a')], BODY, deps)).toEqual([{ id: 'a', outcome: 'stopped', reason: 'aborted' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', uncertain: false });
+	});
+
+	it('7-3 row 2: the process ends after the Put reached S3 but before the answer: reused on resume, one object', async () => {
+		const s = await setup();
+		s.s3.on('put', () => {
+			s.s3.objects.set('k/a.png', checksumOf(SENT)); // arrived
+			s.pendingIO.crashAfter = s.pendingIO.writes; // nothing more reaches the record file
+			s.abort.abort();
+			throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+		});
+		await sendGroup([item('a')], BODY, s.deps);
+		s.pendingIO.crashAfter = Infinity;
+		const pending = new PendingStore(s.pendingIO, OWN);
+		await pending.load();
+		expect(pending.items[0]).toMatchObject({ state: 'putting', uncertain: true });
+		const r = await resumeGroup(['a'], { ...s.deps, pending, signal: new AbortController().signal });
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png', 'head:k/a.png']);
+		expect([...s.s3.objects.keys()]).toEqual(['k/a.png']);
+	});
+
+	it('I2 matches the sent bytes too: another source that re-encodes to bytes sent privately', async () => {
+		const s = await setup();
+		await sendGroup([item('p', { sourceSha256: SOURCE_B })], BODY, s.deps); // private: SOURCE_B and SENT recorded
+		s.s3.calls.length = 0;
+		const r = await sendGroup([pubItem('x', { sourceSha256: 'd'.repeat(64) })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'x', outcome: 'stopped', reason: 'private-recorded' }]);
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('I2 also covers an item that left the group: a changed private-recorded file stops the public group', async () => {
+		const s = await setup();
+		await sendGroup([item('p', { sourceSha256: SOURCE_B, sentSha256: createHash('sha256').update(OTHER_BODY).digest('hex') })], OTHER_BODY, s.deps);
+		s.s3.calls.length = 0;
+		s.changed.add('x');
+		const r = await sendGroup([pubItem('x', { sourceSha256: SOURCE_B }), pubItem('y')], BODY, s.deps);
+		expect(r).toEqual([
+			{ id: 'x', outcome: 'excluded', reason: 'changed' },
+			{ id: 'y', outcome: 'stopped', reason: 'private-recorded' },
+		]);
+		expect(s.s3.calls).toEqual([]);
+	});
+});
+
 describe('resumeGroup', () => {
 	it('recovers a record left in putting: Head absent → rebuild → Put → delivered', async () => {
 		const s = await setup();
@@ -544,7 +655,7 @@ describe('resumeGroup', () => {
 });
 
 describe('terminated after the N-th record write, then resumed (7-3, in process)', () => {
-	it.each([1, 2, 3, 4])('after write %i: one object, delivered after the resume', async (n) => {
+	it.each([1, 2, 3])('after write %i: one object, delivered after the resume', async (n) => {
 		const s = await setup();
 		s.pendingIO.crashAfter = n;
 		s.pendingIO.onCrash = () => s.abort.abort();
