@@ -23,12 +23,16 @@ export interface MarkdownInput {
 }
 
 /** 9-3: what the user wrote is kept (through safeAltText); a public image without one gets an empty alt. */
-export function buildMarkdown(input: MarkdownInput): string {
+export function altFor(input: Pick<MarkdownInput, 'syntax' | 'target' | 'fileBase'>): string {
 	const { syntax, target } = input;
 	const written = syntax.kind === 'wiki' ? syntax.alt : syntax.alt === '' ? undefined : syntax.alt;
-	let alt: string;
-	if (written !== undefined) alt = safeAltText(written);
-	else alt = target.classification === 'public' ? '' : safeAltText(input.fileBase);
+	if (written !== undefined) return safeAltText(written);
+	return target.classification === 'public' ? '' : safeAltText(input.fileBase);
+}
+
+export function buildMarkdown(input: MarkdownInput): string {
+	const { syntax, target } = input;
+	const alt = altFor(input);
 	const url = target.classification === 'public' ? publicUrl(target.publicBaseUrl, input.key) : formatReference(target.alias, input.key);
 	const bar = input.inTable ? '\\|' : '|';
 	return `![${alt}${syntax.size ? `${bar}${syntax.size}` : ''}](${url})`;
