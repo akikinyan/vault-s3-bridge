@@ -9,6 +9,7 @@ export const en = {
 	'modal.run': 'Run test',
 	'modal.cancel': 'Cancel',
 	'modal.close': 'Close',
+	'modal.stop': 'Stop test',
 	'modal.running': 'Running…',
 	'modal.aborted': 'Cancelled. Results below include the cleanup outcome.',
 	'modal.ssoLogin': 'The SSO session must be renewed. Run this command in a terminal, then test again:',

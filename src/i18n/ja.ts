@@ -11,6 +11,7 @@ export const ja: Record<MessageKey, string> = {
 	'modal.run': 'テストを実行',
 	'modal.cancel': 'キャンセル',
 	'modal.close': '閉じる',
+	'modal.stop': 'テストを中断',
 	'modal.running': '実行中…',
 	'modal.aborted': '中断しました。下の結果には後片付けの結果も含まれます。',
 	'modal.ssoLogin': 'SSO セッションの更新が必要です。ターミナルで次のコマンドを実行してから、もう一度テストしてください。',

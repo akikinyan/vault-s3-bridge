@@ -4,6 +4,7 @@ import type { DiagnosticItem, DiagnosticReport } from '../diagnostics/types';
 import { TEST_PREFIX } from '../diagnostics/writeTest';
 import { t, tDynamic, type MessageKey } from '../i18n';
 import type { NetworkSettings, StorageConnection } from '../settings/types';
+import { testButton } from './testButton';
 
 const STATUS_ICON: Record<DiagnosticItem['status'], string> = {
 	success: '✅',
@@ -20,7 +21,7 @@ export class ConnectionTestModal extends Modal {
 	private closed = false;
 	private resultsEl!: HTMLElement;
 	private runButton!: ButtonComponent;
-	private cancelButton!: ButtonComponent;
+	private secondaryButton!: ButtonComponent;
 
 	constructor(
 		app: App,
@@ -41,10 +42,11 @@ export class ConnectionTestModal extends Modal {
 			.addToggle((toggle) => toggle.setValue(this.writeTest).onChange((v) => (this.writeTest = v)));
 		new Setting(contentEl)
 			.addButton((b) => {
-				this.cancelButton = b;
-				b.setButtonText(t('modal.cancel'))
-					.setDisabled(true)
-					.onClick(() => this.controller?.abort());
+				this.secondaryButton = b;
+				b.onClick(() => {
+					if (testButton(this.running).action === 'abort') this.controller?.abort();
+					else this.close();
+				});
 			})
 			.addButton((b) => {
 				this.runButton = b;
@@ -53,6 +55,11 @@ export class ConnectionTestModal extends Modal {
 					.onClick(() => void this.run());
 			});
 		this.resultsEl = contentEl.createDiv({ cls: 'vault-s3-bridge-results' });
+		this.updateSecondaryButton();
+	}
+
+	private updateSecondaryButton(): void {
+		this.secondaryButton.setButtonText(t(testButton(this.running).label));
 	}
 
 	onClose(): void {
@@ -67,7 +74,7 @@ export class ConnectionTestModal extends Modal {
 		this.running = true;
 		this.controller = new AbortController();
 		this.runButton.setDisabled(true);
-		this.cancelButton.setDisabled(false);
+		this.updateSecondaryButton();
 		this.resultsEl.empty();
 		this.resultsEl.createEl('p', { text: t('modal.running') });
 		try {
@@ -85,7 +92,7 @@ export class ConnectionTestModal extends Modal {
 			this.controller = undefined;
 			if (!this.closed) {
 				this.runButton.setDisabled(false);
-				this.cancelButton.setDisabled(true);
+				this.updateSecondaryButton();
 			}
 		}
 	}
