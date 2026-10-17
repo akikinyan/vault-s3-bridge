@@ -17,6 +17,7 @@ import {
 	type RunDeps,
 	runJob,
 	inExcludedFolder,
+	resumableGroups,
 	type SourceFile,
 	uploadCommand,
 } from '../src/upload/job';
@@ -652,5 +653,19 @@ describe('uploadCommand (10-1)', () => {
 		const r = await uploadCommand(deps, false);
 		expect(r).toMatchObject({ done: { files: [{ outcome: 'stopped', reason: 'aborted' }], aborted: 'connection-changed' } });
 		expect(w.s3.calls).toEqual([]);
+	});
+});
+
+describe('resumableGroups (7-4)', () => {
+	it('groups by groupId and never includes delivered items or their group', async () => {
+		const { storedItem } = await import('./fixtures/pendingItems');
+		const items = [
+			storedItem('a', { groupId: 'g1', state: 'putting' }),
+			storedItem('b', { groupId: 'g2', state: 'delivered' }),
+			storedItem('c', { groupId: 'g1', state: 'putting' }),
+			storedItem('d', { groupId: 'g2', state: 'done-unrecorded' }),
+			storedItem('e', { groupId: 'g3', state: 'stopped' }),
+		];
+		expect(resumableGroups(items)).toEqual([['a', 'c'], ['e']]);
 	});
 });

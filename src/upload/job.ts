@@ -652,3 +652,20 @@ export async function uploadCommand(deps: CommandDeps, preview: boolean): Promis
 		release();
 	}
 }
+
+// --- resuming (7-4) --------------------------------------------------------------
+
+/**
+ * Groups of stored records that a resume may send for: by groupId, in record order. Delivered items are never
+ * resumed (their object and history exist; only copying the Markdown or removing them is left), so a group
+ * with any delivered item is left out as a whole.
+ */
+export function resumableGroups(items: DeepReadonly<PendingItem[]>): string[][] {
+	const groups = new Map<string, string[]>();
+	const delivered = new Set(items.filter((i) => i.state === 'delivered').map((i) => i.groupId));
+	for (const i of items) {
+		if (delivered.has(i.groupId)) continue;
+		groups.set(i.groupId, [...(groups.get(i.groupId) ?? []), i.id]);
+	}
+	return [...groups.values()];
+}
