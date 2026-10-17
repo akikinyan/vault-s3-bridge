@@ -298,12 +298,24 @@ export class PendingStore {
 
 	/**
 	 * The Put was answered with a definite rejection (e.g. 403, 409, BadDigest, or 412 followed by a different
-	 * object): it created nothing. The only way to leave putting without making the item uncertain.
+	 * object): it created nothing. With markPutNotStarted, the only ways to leave putting without making the
+	 * item uncertain.
 	 */
 	markPutRejected(ids: readonly string[], reason?: string): Promise<PendingResult> {
 		return this.edit(ids, (item) => ({ ...item, state: 'recorded', ...(reason === undefined ? {} : { reason }) }), {
 			allowed: (item) => item.state === 'putting',
-			rejection: true,
+			putSettled: true,
+		});
+	}
+
+	/**
+	 * putting was written, but the Put was never handed to the SDK: the last check before it refused, or the job
+	 * was aborted first. Only for that case; a Put that was started has an unknown outcome until answered.
+	 */
+	markPutNotStarted(ids: readonly string[], reason: string): Promise<PendingResult> {
+		return this.edit(ids, (item) => ({ ...item, state: 'stopped', reason }), {
+			allowed: (item) => item.state === 'putting',
+			putSettled: true,
 		});
 	}
 
@@ -444,12 +456,12 @@ export class PendingStore {
 
 	/**
 	 * @param opts.allowed every item must satisfy it, otherwise nothing changes (`wrong-state`).
-	 * @param opts.rejection only markPutRejected: leaves putting without marking the item uncertain.
+	 * @param opts.putSettled only markPutRejected and markPutNotStarted: leave putting without marking the item uncertain.
 	 */
 	private edit(
 		ids: readonly string[],
 		f: (item: PendingItem) => PendingItem,
-		opts: { allowed?: (item: PendingItem) => boolean; rejection?: boolean } = {},
+		opts: { allowed?: (item: PendingItem) => boolean; putSettled?: boolean } = {},
 	): Promise<PendingResult> {
 		return this.change((list) => {
 			const wanted = new Set(ids);
@@ -460,7 +472,7 @@ export class PendingStore {
 				if (!wanted.has(item.id)) return item;
 				const next = f(item);
 				// Leaving putting without a recorded rejection means the Put's outcome is unknown.
-				const leftPutUnanswered = item.state === 'putting' && next.state !== 'putting' && !opts.rejection;
+				const leftPutUnanswered = item.state === 'putting' && next.state !== 'putting' && !opts.putSettled;
 				// The flags only ever grow, whatever the caller passed.
 				return {
 					...next,

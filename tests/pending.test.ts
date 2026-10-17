@@ -247,6 +247,18 @@ describe('PendingStore — removal rules (7-2)', () => {
 		expect(await again.removeFailed(['a'])).toEqual({ ok: true });
 	});
 
+	it('leaves putting without uncertainty when the Put was never started', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		await store.add([newItem('a')]);
+		await store.markPutting(['a']);
+		// The checkpoint right before send() refused (e.g. the connection changed): nothing was sent.
+		expect(await store.markPutNotStarted(['a'], 'connection-changed')).toEqual({ ok: true });
+		expect(store.items[0]).toMatchObject({ state: 'stopped', reason: 'connection-changed', uncertain: false, putSent: true });
+		expect(await store.markPutNotStarted(['a'], 'again')).toEqual({ ok: false, reason: 'wrong-state' });
+		expect(await (await storeWith(io)).removeFailed(['a'])).toEqual({ ok: true });
+	});
+
 	it('keeps an existing object protected after the item moves on (done-unrecorded, then stopped on resume)', async () => {
 		const io = new FakeIO();
 		io.files.set(OWN_FILE, fileText(OWN, [storedItem('a', { state: 'done-unrecorded', putSent: true })]));
