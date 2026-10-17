@@ -1,6 +1,7 @@
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t, type MessageKey } from '../i18n';
 import { DEFAULT_KEY_TEMPLATE, type StorageConnection } from '../settings/types';
+import { connectionWarnings } from '../settings/validate';
 
 /**
  * Creates or edits one connection. Alias, bucket and endpoint are fixed after creation;
@@ -56,7 +57,10 @@ export class ConnectionEditModal extends Modal {
 					.setValue(d.classification)
 					.setDisabled(lockedPrivate)
 					.onChange((v) => {
+						const before = d.classification;
 						d.classification = v === 'public' ? 'public' : 'private';
+						// A new connection follows the default of its classification until the template is edited.
+						if (!existing && d.keyTemplate === DEFAULT_KEY_TEMPLATE[before]) d.keyTemplate = DEFAULT_KEY_TEMPLATE[d.classification];
 						this.render();
 					});
 			});
@@ -101,11 +105,36 @@ export class ConnectionEditModal extends Modal {
 			.addToggle((toggle) => toggle.setValue(d.forcePathStyle === true).onChange((v) => (d.forcePathStyle = v || undefined)));
 		pathStyle.settingEl.toggle(d.endpoint !== undefined);
 
+		const warnings = contentEl.createDiv();
+		const showWarnings = () => {
+			warnings.empty();
+			for (const w of connectionWarnings(d)) warnings.createEl('p', { cls: 'mod-warning', text: `⚠ ${t(w.key, w.params)}` });
+		};
 		if (d.classification === 'public') {
 			new Setting(contentEl)
 				.setName(t('edit.publicBaseUrl'))
-				.addText((text) => text.setValue(d.publicBaseUrl ?? '').onChange((v) => (d.publicBaseUrl = v.trim() || undefined)));
+				.setDesc(t('edit.publicBaseUrlDesc'))
+				.addText((text) =>
+					text
+						.setPlaceholder('https://cdn.example.com')
+						.setValue(d.publicBaseUrl ?? '')
+						.onChange((v) => {
+							d.publicBaseUrl = v.trim() || undefined;
+							showWarnings();
+						}),
+				);
 		}
+		new Setting(contentEl)
+			.setName(t('edit.keyTemplate'))
+			.setDesc(t('edit.keyTemplateDesc'))
+			.addText((text) =>
+				text.setValue(d.keyTemplate).onChange((v) => {
+					d.keyTemplate = v.trim();
+					showWarnings();
+				}),
+			);
+		contentEl.appendChild(warnings);
+		showWarnings();
 
 		new Setting(contentEl).addButton((b) =>
 			b
@@ -121,8 +150,6 @@ export class ConnectionEditModal extends Modal {
 			publicBaseUrl: this.draft.classification === 'public' ? this.draft.publicBaseUrl : undefined,
 			// Hidden without a custom endpoint, so it must not stay in effect either.
 			forcePathStyle: this.draft.endpoint ? this.draft.forcePathStyle : undefined,
-			// A new connection starts from the default of its classification; existing ones keep theirs.
-			keyTemplate: this.previous ? this.draft.keyTemplate : DEFAULT_KEY_TEMPLATE[this.draft.classification],
 		};
 		const errors = await this.onSave(this.previous, next, this.profile);
 		if (errors.length > 0) {

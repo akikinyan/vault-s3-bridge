@@ -9,10 +9,10 @@ import type { OtherDeviceFile } from '../upload/pending';
 import { STATE_KEY } from '../upload/present';
 import { copyRecords, discardOtherRecords, discardRecord, resetDamagedRecords, resumeRecords, takeOverRecords } from '../ui/pendingFlow';
 import { connectionState, resolveAlias } from './registry';
-import { validateProxyUrl } from './validate';
+import { connectionWarnings, validateProxyUrl } from './validate';
 import type { StorageConnection } from './types';
 
-import type { FieldKey } from './ops';
+import { type FieldKey, UPLOAD_BOUNDS } from './ops';
 
 type ControlKey = FieldKey;
 
@@ -85,6 +85,35 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				heading: t('settings.missing'),
 				visible: missing.length > 0,
 				items: missing.map(({ alias, target }) => ({ name: `${alias} → ${describeTarget(target)}`, desc: t('settings.missingDesc') })),
+			},
+			{
+				type: 'group',
+				heading: t('settings.upload'),
+				items: [
+					{
+						name: t('settings.defaultConnection'),
+						desc: t('settings.defaultConnectionDesc'),
+						control: {
+							type: 'dropdown',
+							key: 'defaultConnectionId',
+							options: Object.fromEntries([
+								['', t('settings.defaultConnectionNone')],
+								...settings.connections.map((c) => [c.id, `${c.alias} (${c.classification === 'private' ? t('edit.private') : t('edit.public')})`]),
+							]) as Record<string, string>,
+						},
+					},
+					{ name: t('settings.webp'), desc: t('settings.webpDesc'), control: { type: 'toggle', key: 'webpEnabled' } },
+					{
+						name: t('settings.webpQuality'),
+						visible: settings.upload.webp.enabled,
+						control: { type: 'slider', key: 'webpQuality', min: UPLOAD_BOUNDS.webpQualityPercent.min, max: UPLOAD_BOUNDS.webpQualityPercent.max, step: 1 },
+					},
+					{ name: t('settings.stripPrivate'), desc: t('settings.stripPrivateDesc'), control: { type: 'toggle', key: 'stripPrivate' } },
+					{ name: t('settings.uploadMaxFileMB'), control: { type: 'number', key: 'uploadMaxFileMB', ...UPLOAD_BOUNDS.uploadMaxFileMB, step: 1 } },
+					{ name: t('settings.uploadMaxJobMB'), desc: t('settings.uploadMaxJobDesc'), control: { type: 'number', key: 'uploadMaxJobMB', ...UPLOAD_BOUNDS.uploadMaxJobMB, step: 10 } },
+					{ name: t('settings.excludeFolders'), desc: t('settings.excludeFoldersDesc'), control: { type: 'textarea', key: 'excludeFolders', rows: 3 } },
+					{ name: t('settings.historyLimit'), desc: t('settings.historyLimitDesc'), control: { type: 'number', key: 'historyLimit', ...UPLOAD_BOUNDS.historyLimit, step: 100 } },
+				],
 			},
 			...this.pendingDefinitions(),
 			{
@@ -212,6 +241,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		const label = STATE_LABEL[state];
 		if (label) notes.push(`⚠ ${t(label)}`);
 		if (!this.plugin.profileFor(connection.id)) notes.push(`⚠ ${t('settings.state.profileNotSet')}`);
+		for (const w of connectionWarnings(connection)) if (w.key !== 'upload.confirm.identifying') notes.push(`⚠ ${t(w.key, w.params)}`);
 		return { name: connection.alias, desc: notes.join(' — '), action: () => void this.openEditor(connection) };
 	}
 
@@ -232,6 +262,22 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				return s.preview.maxMegapixels;
 			case 'cacheMB':
 				return s.preview.cacheMB;
+			case 'defaultConnectionId':
+				return s.upload.defaultConnectionId ?? '';
+			case 'webpEnabled':
+				return s.upload.webp.enabled;
+			case 'webpQuality':
+				return Math.round(s.upload.webp.quality * 100);
+			case 'stripPrivate':
+				return s.upload.stripPrivate;
+			case 'uploadMaxFileMB':
+				return s.upload.maxFileMB;
+			case 'uploadMaxJobMB':
+				return s.upload.maxJobMB;
+			case 'excludeFolders':
+				return s.upload.excludeFolders.join('\n');
+			case 'historyLimit':
+				return s.historyLimit;
 		}
 		return undefined;
 	}
@@ -241,7 +287,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		const k = key as ControlKey;
 		// Text fields save once typing pauses: every save re-reads and rewrites data.json.
-		if (k === 'proxyUrl' || k === 'noProxy') {
+		if (k === 'proxyUrl' || k === 'noProxy' || k === 'excludeFolders') {
 			if (k === 'proxyUrl' && validateProxyUrl(String(value).trim() || undefined)) return;
 			const previous = this.pendingText.get(k);
 			if (previous) window.clearTimeout(previous.timer);
@@ -278,6 +324,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				this.plugin.scheduleRecreatePreview();
 				return;
 			case 'language':
+			case 'webpEnabled':
 				this.update();
 				return;
 			case 'maxFileMB':

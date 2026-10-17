@@ -1,4 +1,6 @@
 import { isValidAlias } from '../reference/reference';
+import type { MessageKey } from '../i18n';
+import { checkTemplate, identifyingVariables } from '../upload/key';
 import type { StorageConnection } from './types';
 
 export type ValidationError =
@@ -8,6 +10,7 @@ export type ValidationError =
 	| 'bucket-required'
 	| 'region-required'
 	| 'endpoint-invalid'
+	| 'template-invalid'
 	| 'proxy-invalid'
 	| 'proxy-credentials-unsupported';
 
@@ -20,6 +23,7 @@ export function validateConnectionFields(next: StorageConnection, others: readon
 	if (!next.bucket) errors.push('bucket-required');
 	if (!next.region) errors.push('region-required');
 	if (next.endpoint && !isHttpsUrl(next.endpoint)) errors.push('endpoint-invalid');
+	if (checkTemplate(next.keyTemplate)) errors.push('template-invalid');
 	return errors;
 }
 
@@ -61,4 +65,19 @@ function isHttpsUrl(value: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Shown in the connection editor and the settings list; saving is not blocked by these (11-3, plan 2-8): an
+ * invalid template is a save error instead (validateConnectionFields).
+ */
+export function connectionWarnings(c: Pick<StorageConnection, 'classification' | 'publicBaseUrl' | 'keyTemplate'>): { key: MessageKey; params?: Record<string, string> }[] {
+	const out: { key: MessageKey; params?: Record<string, string> }[] = [];
+	const template = checkTemplate(c.keyTemplate);
+	if (template) out.push({ key: template.reason === 'unknown-variable' ? 'edit.templateUnknown' : 'edit.templateInvalid', params: { name: 'name' in template ? template.name : '' } });
+	if (c.classification !== 'public') return out;
+	if (c.publicBaseUrl === undefined || validatePublicBaseUrl(c.publicBaseUrl)) out.push({ key: 'edit.publicBaseUrlNeeded' });
+	const vars = identifyingVariables(c.keyTemplate);
+	if (vars.length > 0) out.push({ key: 'upload.confirm.identifying', params: { vars: vars.map((v) => `{${v}}`).join(' ') } });
+	return out;
 }

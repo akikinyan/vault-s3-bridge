@@ -4,6 +4,7 @@ import type { DiagnosticItem, DiagnosticReport } from '../diagnostics/types';
 import { TEST_PREFIX } from '../diagnostics/writeTest';
 import { t, tDynamic, type MessageKey } from '../i18n';
 import type { NetworkSettings, StorageConnection } from '../settings/types';
+import { validatePublicBaseUrl } from '../settings/validate';
 import { testButton } from './testButton';
 
 const STATUS_ICON: Record<DiagnosticItem['status'], string> = {
@@ -118,6 +119,11 @@ export class ConnectionTestModal extends Modal {
 
 	private renderReport(report: DiagnosticReport): void {
 		this.renderItems(report.items);
+		// Plan 2-8: the same item as in the connection editor. Not a test of the storage itself.
+		const c = this.connection;
+		if (c.classification === 'public' && (c.publicBaseUrl === undefined || validatePublicBaseUrl(c.publicBaseUrl))) {
+			this.resultsEl.createEl('p', { cls: 'mod-warning', text: `⚠ ${t('edit.publicBaseUrlNeeded')}` });
+		}
 		if (report.aborted) this.resultsEl.createEl('p', { cls: 'vault-s3-bridge-aborted', text: t('modal.aborted') });
 		const command = report.ssoLoginCommand;
 		if (command) {
