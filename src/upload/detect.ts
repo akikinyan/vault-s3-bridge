@@ -13,10 +13,10 @@ export interface FoundEmbed {
 	/** In a GFM table row (any container), where a generated `|` must be escaped. */
 	inTable: boolean;
 	/**
-	 * On a quoted or callout line that contains `|`. The cache reports only top-level sections, so whether such a
-	 * line is a table row cannot be checked against it; callers must not rewrite these embeds.
+	 * On a `|` line of a table inside a quote, callout or list. The cache reports only top-level sections, so
+	 * whether such a line is a table row cannot be checked against it (it is left out of the table comparison).
 	 */
-	inQuotedPipeLine: boolean;
+	inNestedTable: boolean;
 }
 
 export type ParseProblem = 'lone-cr' | 'unclosed-percent' | 'unclosed-html-comment' | 'comment-spans-block';
@@ -28,6 +28,7 @@ interface Line {
 	text: string;
 	kind: 'frontmatter' | 'fence' | 'indented-code' | 'math' | 'html' | 'normal';
 	inTable: boolean;
+	inNestedTable: boolean;
 }
 
 const QUOTE = /^(?: {0,3}> ?)*/;
@@ -36,6 +37,7 @@ const FENCE = /^(`{3,}|~{3,})(.*)$/;
 const HTML_BLOCK_6 =
 	/^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|\/?>|$)/i;
 const HTML_BLOCK_1 = /^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)/i;
+const ATX_HEADING = /^ {0,3}#{1,6}(?:\s|$)/;
 const DELIMITER_ROW = /^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
 
 const isBlank = (s: string) => s.trim() === '';
@@ -58,7 +60,7 @@ function splitLines(text: string): Line[] {
 	let start = 0;
 	for (const raw of text.split('\n')) {
 		const t = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-		lines.push({ start, text: t, kind: 'normal', inTable: false });
+		lines.push({ start, text: t, kind: 'normal', inTable: false, inNestedTable: false });
 		start += raw.length + 1;
 	}
 	return lines;
@@ -181,7 +183,9 @@ function markTables(lines: Line[]): void {
 		if (quoteDepth(head.text) !== quoteDepth(delim.text) || cellCount(h) !== cellCount(d)) continue;
 		const depth = quoteDepth(head.text);
 		const prev = lines[i - 1];
-		if (prev && prev.kind === 'normal' && !prev.inTable && quoteDepth(prev.text) === depth && !isBlank(content(prev.text))) continue;
+		const prevText = prev ? content(prev.text) : '';
+		const paragraphBefore = prev !== undefined && prev.kind === 'normal' && !prev.inTable && quoteDepth(prev.text) === depth && !isBlank(prevText) && !ATX_HEADING.test(prevText);
+		if (paragraphBefore) continue;
 		let n = i;
 		while (n < lines.length) {
 			const l = lines[n]!;
@@ -191,13 +195,40 @@ function markTables(lines: Line[]): void {
 		}
 		i = n - 1;
 	}
+	markNestedTables(lines, quoteDepth, content);
+}
+
+/**
+ * A run of lines in the same container (quote depth, or indented inside a list) that holds a delimiter-like
+ * row may be a table the cache cannot report: its `|` lines are marked so the comparison does not judge them.
+ */
+function markNestedTables(lines: Line[], quoteDepth: (t: string) => number, content: (t: string) => string): void {
+	const delimiterLike = (t: string) => t.includes('|') && t.includes('-') && DELIMITER_ROW.test(t.trim());
+	// Tables found inside a quote or callout are escaped as tables, but still cannot be compared.
+	for (const l of lines) if (l.inTable && quoteDepth(l.text) > 0) l.inNestedTable = true;
+	let i = 0;
+	while (i < lines.length) {
+		const first = lines[i]!;
+		const depth = quoteDepth(first.text);
+		const nested = (l: Line) => depth > 0 || indentOf(content(l.text)) > 0;
+		if (first.kind !== 'normal' || isBlank(content(first.text)) || !nested(first)) {
+			i++;
+			continue;
+		}
+		let n = i;
+		while (n < lines.length && lines[n]!.kind === 'normal' && quoteDepth(lines[n]!.text) === depth && !isBlank(content(lines[n]!.text)) && nested(lines[n]!)) n++;
+		const run = lines.slice(i, n);
+		if (run.some((l) => !l.inTable && delimiterLike(content(l.text)))) {
+			for (const l of run) if (!l.inTable && content(l.text).includes('|')) l.inNestedTable = true;
+		}
+		i = Math.max(n, i + 1);
+	}
 }
 
 const PUNCT = /[!-/:-@[-`{-~]/;
 
-function where(line: Line): { inTable: boolean; inQuotedPipeLine: boolean } {
-	const quote = QUOTE.exec(line.text)?.[0] ?? '';
-	return { inTable: line.inTable, inQuotedPipeLine: quote.includes('>') && line.text.slice(quote.length).includes('|') };
+function where(line: Line): { inTable: boolean; inNestedTable: boolean } {
+	return { inTable: line.inTable, inNestedTable: line.inNestedTable };
 }
 
 /** One left-to-right pass over the text of normal lines. */
@@ -403,7 +434,7 @@ export function compareWithCache(text: string, own: readonly FoundEmbed[], cache
 	const onlyOwn = own.filter((e) => !cacheKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
 	const onlyCache = cache.embeds.filter((e) => !ownKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
 	const table = own
-		.filter((e) => cacheKeys.has(key(e)) && !e.inQuotedPipeLine)
+		.filter((e) => cacheKeys.has(key(e)) && !e.inNestedTable)
 		.filter((e) => {
 			const line = lineOf(text, e.offset);
 			return e.inTable !== cache.tables.some((t) => line >= t.startLine && line <= t.endLine);
@@ -472,6 +503,9 @@ export function parseEmbedSyntax(original: string, inTable: boolean): { ok: true
 	const kind = linkKind(path);
 	if (kind) return reject(kind);
 	let alt = m[1]!;
+	// Outside a detected table, `\|` may still be a cell of a table the parser cannot see (in a list or a
+	// callout): rewriting it would produce a bare `|` there.
+	if (!inTable && alt.includes('\\|')) return reject('escaped-pipe');
 	if (inTable) alt = alt.replace(/\\\|/g, '|');
 	const bar = alt.lastIndexOf('|');
 	const size = bar >= 0 ? parseSize(alt.slice(bar + 1)) : undefined;

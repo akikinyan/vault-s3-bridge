@@ -52,10 +52,17 @@ describe('parseEmbeds against measured metadataCache output', () => {
 		expect(flag('table-no-pipe').inTable).toBe(true);
 	});
 
-	it('flags embeds on quoted or callout lines with | (the cache cannot tell whether they are table rows)', () => {
+	it('flags tables in a quote, callout or list (the cache cannot tell whether they are tables)', () => {
 		const own = parsed(note('embeds-2'));
-		expect(own.filter((e) => e.inQuotedPipeLine).map((e) => e.original)).toEqual(['![[quote-table.png]]', '![[callout-table.png]]']);
-		expect(parsed('> a ![[x.png]]\n').map((e) => e.inQuotedPipeLine)).toEqual([false]);
+		expect(own.filter((e) => e.inNestedTable).map((e) => e.original)).toEqual(['![[quote-table.png]]', '![[callout-table.png]]']);
+		expect(parsed('- item\n\n  | a | b |\n  |---|---|\n  | ![[x.png]] | y |\n').map((e) => e.inNestedTable)).toEqual([true]);
+		// No delimiter row, no table: a sized image in a callout is not flagged.
+		expect(parsed('> [!note]\n> ![[a.png|300]]\n').map((e) => e.inNestedTable)).toEqual([false]);
+		expect(parsed('> a | b ![[x.png]]\n').map((e) => e.inNestedTable)).toEqual([false]);
+	});
+
+	it('a heading line does not stop a table from starting', () => {
+		expect(parsed('## 表\n| a | b |\n|---|---|\n| ![[x.png]] | y |\n').map((e) => e.inTable)).toEqual([true]);
 	});
 
 	it('an unclosed fence (the measured 3b case) hides everything after it, as in the cache', () => {
@@ -130,7 +137,7 @@ describe('parseEmbeds: what it refuses to guess', () => {
 	});
 
 	it('keeps CRLF offsets as stored', () => {
-		expect(parsed('# t\r\n\r\n![[a.png]]\r\n')).toEqual([{ offset: 7, original: '![[a.png]]', inComment: false, inTable: false, inQuotedPipeLine: false }]);
+		expect(parsed('# t\r\n\r\n![[a.png]]\r\n')).toEqual([{ offset: 7, original: '![[a.png]]', inComment: false, inTable: false, inNestedTable: false }]);
 	});
 });
 
@@ -157,6 +164,8 @@ describe('parseEmbedSyntax (8-4)', () => {
 		['![[a.png#見出し]]', false, 'subpath'],
 		['![[a.png^abc]]', false, 'subpath'],
 		['![[a.png\\|300]]', false, 'escaped-pipe'],
+		// e.g. a cell of a table in a list or callout, which the parser does not see as a table
+		['![t\\|200](a.png)', false, 'escaped-pipe'],
 		['![t](a.png "タイトル")', false, 'title'],
 		['![](https://example.com/a.png)', false, 'external'],
 		['![[https://example.com/a.png]]', false, 'external'],
