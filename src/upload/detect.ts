@@ -12,6 +12,11 @@ export interface FoundEmbed {
 	inComment: boolean;
 	/** In a GFM table row (any container), where a generated `|` must be escaped. */
 	inTable: boolean;
+	/**
+	 * On a quoted or callout line that contains `|`. The cache reports only top-level sections, so whether such a
+	 * line is a table row cannot be checked against it; callers must not rewrite these embeds.
+	 */
+	inQuotedPipeLine: boolean;
 }
 
 export type ParseProblem = 'lone-cr' | 'unclosed-percent' | 'unclosed-html-comment' | 'comment-spans-block';
@@ -159,7 +164,10 @@ function classify(lines: Line[]): void {
 	markTables(lines);
 }
 
-/** GFM tables: a header row and a delimiter row with the same cell count, then rows up to a blank line. */
+/**
+ * Tables as Obsidian reads them (measured): a header row and a delimiter row with the same cell count, not
+ * directly after a paragraph line, then rows that contain `|`, up to a blank line.
+ */
 function markTables(lines: Line[]): void {
 	const quoteDepth = (t: string) => (QUOTE.exec(t)?.[0].match(/>/g) ?? []).length;
 	const content = (t: string) => t.slice(QUOTE.exec(t)?.[0].length ?? 0);
@@ -172,10 +180,12 @@ function markTables(lines: Line[]): void {
 		if (!h.includes('|') || !DELIMITER_ROW.test(d) || !d.includes('-') || indentOf(h) >= 4) continue;
 		if (quoteDepth(head.text) !== quoteDepth(delim.text) || cellCount(h) !== cellCount(d)) continue;
 		const depth = quoteDepth(head.text);
+		const prev = lines[i - 1];
+		if (prev && prev.kind === 'normal' && !prev.inTable && quoteDepth(prev.text) === depth && !isBlank(content(prev.text))) continue;
 		let n = i;
 		while (n < lines.length) {
 			const l = lines[n]!;
-			if (l.kind !== 'normal' || quoteDepth(l.text) !== depth || isBlank(content(l.text))) break;
+			if (l.kind !== 'normal' || quoteDepth(l.text) !== depth || isBlank(content(l.text)) || !content(l.text).includes('|')) break;
 			l.inTable = true;
 			n++;
 		}
@@ -184,6 +194,11 @@ function markTables(lines: Line[]): void {
 }
 
 const PUNCT = /[!-/:-@[-`{-~]/;
+
+function where(line: Line): { inTable: boolean; inQuotedPipeLine: boolean } {
+	const quote = QUOTE.exec(line.text)?.[0] ?? '';
+	return { inTable: line.inTable, inQuotedPipeLine: quote.includes('>') && line.text.slice(quote.length).includes('|') };
+}
 
 /** One left-to-right pass over the text of normal lines. */
 export function parseEmbeds(text: string): ParsedNote {
@@ -285,14 +300,16 @@ export function parseEmbeds(text: string): ParsedNote {
 			const end = text.indexOf(']]', p + 3);
 			const nl = text.indexOf('\n', p);
 			if (end > p + 3 && (nl < 0 || end < nl)) {
-				embeds.push({ offset: p, original: text.slice(p, end + 2), inComment, inTable: lines[lineAt[p]!]!.inTable });
+				embeds.push({ offset: p, original: text.slice(p, end + 2), inComment, ...where(lines[lineAt[p]!]!) });
 				p = end + 2;
 				continue;
 			}
 		} else if (text.startsWith('![', p)) {
 			const len = markdownImageLength(text, p);
 			if (len > 0) {
-				embeds.push({ offset: p, original: text.slice(p, p + len), inComment, inTable: lines[lineAt[p]!]!.inTable });
+				const original = text.slice(p, p + len);
+				// URLs with a scheme (https://, s3-bridge://) are not embeds for the cache (measured).
+				if (!hasScheme(original)) embeds.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
 				p += len;
 				continue;
 			}
@@ -303,8 +320,17 @@ export function parseEmbeds(text: string): ParsedNote {
 	return { ok: true, embeds };
 }
 
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/** `![alt](dest)` whose destination starts with a URL scheme. */
+function hasScheme(markdownImage: string): boolean {
+	const open = markdownImage.indexOf('](');
+	const dest = markdownImage.slice(open + 2).replace(/^</, '');
+	return SCHEME.test(dest);
+}
+
 /** Length of `![alt](dest "title")` at p on one line, or 0. */
-function markdownImageLength(text: string, p: number): number {
+export function markdownImageLength(text: string, p: number): number {
 	let q = p + 2;
 	let depth = 1;
 	while (q < text.length && depth > 0) {
@@ -377,7 +403,7 @@ export function compareWithCache(text: string, own: readonly FoundEmbed[], cache
 	const onlyOwn = own.filter((e) => !cacheKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
 	const onlyCache = cache.embeds.filter((e) => !ownKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
 	const table = own
-		.filter((e) => cacheKeys.has(key(e)))
+		.filter((e) => cacheKeys.has(key(e)) && !e.inQuotedPipeLine)
 		.filter((e) => {
 			const line = lineOf(text, e.offset);
 			return e.inTable !== cache.tables.some((t) => line >= t.startLine && line <= t.endLine);
@@ -409,8 +435,6 @@ export type EmbedSyntax =
 	| { kind: 'markdown'; path: string; alt: string; size?: string };
 
 export type SyntaxRejection = 'multiple-pipes' | 'subpath' | 'escaped-pipe' | 'title' | 'external' | 'reference' | 'unparsable';
-
-const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /**
  * The parts of an embed the upload can rewrite, or why it cannot. In a table, a wiki embed separates its

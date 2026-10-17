@@ -2,7 +2,7 @@
 // holds exactly the snapshot the job detected the embeds in (I7); otherwise the caller copies the Markdown.
 import { encodeSegment, formatReference, parseReference, safeAltText } from '../reference/reference';
 import { validatePublicBaseUrl } from '../settings/validate';
-import { type EmbedSyntax, parseEmbeds } from './detect';
+import { type EmbedSyntax, markdownImageLength } from './detect';
 
 export type Target = { classification: 'public'; publicBaseUrl: string } | { classification: 'private'; alias: string };
 
@@ -34,10 +34,9 @@ export function buildMarkdown(input: MarkdownInput): string {
 	return `![${alt}${syntax.size ? `${bar}${syntax.size}` : ''}](${url})`;
 }
 
-/** 9-3 check: the generated Markdown is one embed, and the key comes back out of its URL or reference. */
+/** 9-3 check: the generated Markdown is exactly one image, and the key comes back out of its URL or reference. */
 export function verifyMarkdown(markdown: string, target: Target, key: string): boolean {
-	const parsed = parseEmbeds(markdown);
-	if (!parsed.ok || parsed.embeds.length !== 1 || parsed.embeds[0]!.original !== markdown) return false;
+	if (markdownImageLength(markdown, 0) !== markdown.length || !markdown.startsWith('![')) return false;
 	const m = /\]\(([^()\s]+)\)$/.exec(markdown);
 	if (!m) return false;
 	const url = m[1]!;

@@ -1,0 +1,51 @@
+{
+	"embeds": [
+		{
+			"offset": 20,
+			"original": "![[assets/examples/png-plain.png]]"
+		},
+		{
+			"offset": 82,
+			"original": "![[crlf-table.png\\|100]]"
+		},
+		{
+			"offset": 109,
+			"original": "![t](crlf-table-md.png)"
+		},
+		{
+			"offset": 181,
+			"original": "![t](assets/examples/webp-plain.webp)"
+		},
+		{
+			"offset": 222,
+			"original": "![[crlf-percent.png]]"
+		}
+	],
+	"sections": [
+		{
+			"type": "heading",
+			"startLine": 0,
+			"endLine": 0
+		},
+		{
+			"type": "paragraph",
+			"startLine": 2,
+			"endLine": 3
+		},
+		{
+			"type": "table",
+			"startLine": 5,
+			"endLine": 7
+		},
+		{
+			"type": "code",
+			"startLine": 9,
+			"endLine": 11
+		},
+		{
+			"type": "paragraph",
+			"startLine": 13,
+			"endLine": 13
+		}
+	]
+}

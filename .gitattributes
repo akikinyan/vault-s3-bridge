@@ -1,1 +1,2 @@
 tests/fixtures/images/** -text
+tests/fixtures/notes/*-crlf.md -text

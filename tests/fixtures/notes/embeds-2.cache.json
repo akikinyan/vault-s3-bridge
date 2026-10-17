@@ -1,0 +1,314 @@
+{
+	"embeds": [
+		{
+			"offset": 127,
+			"original": "![t](assets/examples/png-plain.png \"タイトル\")"
+		},
+		{
+			"offset": 177,
+			"original": "![[assets/examples/png-plain.png#見出し]]"
+		},
+		{
+			"offset": 224,
+			"original": "![[assets/examples/png-plain.png^abc]]"
+		},
+		{
+			"offset": 272,
+			"original": "![[assets/examples/png-plain.png|説明|300]]"
+		},
+		{
+			"offset": 323,
+			"original": "![[置換検証]]"
+		},
+		{
+			"offset": 338,
+			"original": "![[assets/examples/png-plain.png|300]]"
+		},
+		{
+			"offset": 377,
+			"original": "![[assets/examples/png-plain.png|300x200]]"
+		},
+		{
+			"offset": 420,
+			"original": "![説明|300x200](assets/examples/png-plain.png)"
+		},
+		{
+			"offset": 473,
+			"original": "![p](assets/examples/a(1).png)"
+		},
+		{
+			"offset": 506,
+			"original": "![q](assets/examples/a%20b.png)"
+		},
+		{
+			"offset": 552,
+			"original": "![[double-backslash.png]]"
+		},
+		{
+			"offset": 586,
+			"original": "![[in-link.png]]"
+		},
+		{
+			"offset": 629,
+			"original": "![[a1.png]]"
+		},
+		{
+			"offset": 640,
+			"original": "![[a2.png]]"
+		},
+		{
+			"offset": 713,
+			"original": "![[dollar-text.png]]"
+		},
+		{
+			"offset": 750,
+			"original": "![[after-math.png]]"
+		},
+		{
+			"offset": 821,
+			"original": "![[html-inline-span.png]]"
+		},
+		{
+			"offset": 885,
+			"original": "![[table-after-paragraph.png]]"
+		},
+		{
+			"offset": 948,
+			"original": "![[table-row.png\\|200]]"
+		},
+		{
+			"offset": 974,
+			"original": "![t](table-md.png)"
+		},
+		{
+			"offset": 1000,
+			"original": "![[table-lazy-row.png]]"
+		},
+		{
+			"offset": 1037,
+			"original": "![[table-no-pipe.png]]"
+		},
+		{
+			"offset": 1094,
+			"original": "![[quote-table.png]]"
+		},
+		{
+			"offset": 1133,
+			"original": "![[ordered-continuation.png]]"
+		},
+		{
+			"offset": 1168,
+			"original": "![[indented-after-list-blank.png]]"
+		},
+		{
+			"offset": 1247,
+			"original": "![[list-blank-then-indent.png]]"
+		},
+		{
+			"offset": 1426,
+			"original": "![[after-code-percent.png]]"
+		},
+		{
+			"offset": 1466,
+			"original": "![[after-code-comment.png]]"
+		},
+		{
+			"offset": 1514,
+			"original": "![[after-fence-percent.png]]"
+		},
+		{
+			"offset": 1552,
+			"original": "![[assets/examples/png-plain.png\\|300]]"
+		},
+		{
+			"offset": 1641,
+			"original": "![[callout-table.png]]"
+		},
+		{
+			"offset": 1674,
+			"original": "![[last.png]]"
+		}
+	],
+	"sections": [
+		{
+			"type": "heading",
+			"startLine": 0,
+			"endLine": 0
+		},
+		{
+			"type": "paragraph",
+			"startLine": 2,
+			"endLine": 2
+		},
+		{
+			"type": "paragraph",
+			"startLine": 4,
+			"endLine": 4
+		},
+		{
+			"type": "paragraph",
+			"startLine": 6,
+			"endLine": 6
+		},
+		{
+			"type": "paragraph",
+			"startLine": 8,
+			"endLine": 8
+		},
+		{
+			"type": "paragraph",
+			"startLine": 10,
+			"endLine": 10
+		},
+		{
+			"type": "paragraph",
+			"startLine": 12,
+			"endLine": 12
+		},
+		{
+			"type": "paragraph",
+			"startLine": 14,
+			"endLine": 14
+		},
+		{
+			"type": "paragraph",
+			"startLine": 16,
+			"endLine": 16
+		},
+		{
+			"type": "paragraph",
+			"startLine": 18,
+			"endLine": 18
+		},
+		{
+			"type": "paragraph",
+			"startLine": 20,
+			"endLine": 20
+		},
+		{
+			"type": "paragraph",
+			"startLine": 22,
+			"endLine": 22
+		},
+		{
+			"type": "paragraph",
+			"startLine": 24,
+			"endLine": 24
+		},
+		{
+			"type": "paragraph",
+			"startLine": 26,
+			"endLine": 27
+		},
+		{
+			"type": "paragraph",
+			"startLine": 29,
+			"endLine": 29
+		},
+		{
+			"type": "paragraph",
+			"startLine": 31,
+			"endLine": 31
+		},
+		{
+			"type": "html",
+			"startLine": 33,
+			"endLine": 35
+		},
+		{
+			"type": "paragraph",
+			"startLine": 37,
+			"endLine": 37
+		},
+		{
+			"type": "paragraph",
+			"startLine": 39,
+			"endLine": 42
+		},
+		{
+			"type": "table",
+			"startLine": 44,
+			"endLine": 46
+		},
+		{
+			"type": "paragraph",
+			"startLine": 47,
+			"endLine": 47
+		},
+		{
+			"type": "table",
+			"startLine": 49,
+			"endLine": 51
+		},
+		{
+			"type": "blockquote",
+			"startLine": 53,
+			"endLine": 55
+		},
+		{
+			"type": "list",
+			"startLine": 57,
+			"endLine": 60
+		},
+		{
+			"type": "paragraph",
+			"startLine": 62,
+			"endLine": 62
+		},
+		{
+			"type": "code",
+			"startLine": 64,
+			"endLine": 64
+		},
+		{
+			"type": "list",
+			"startLine": 66,
+			"endLine": 68
+		},
+		{
+			"type": "code",
+			"startLine": 70,
+			"endLine": 72
+		},
+		{
+			"type": "code",
+			"startLine": 74,
+			"endLine": 78
+		},
+		{
+			"type": "html",
+			"startLine": 80,
+			"endLine": 82
+		},
+		{
+			"type": "paragraph",
+			"startLine": 84,
+			"endLine": 84
+		},
+		{
+			"type": "code",
+			"startLine": 86,
+			"endLine": 88
+		},
+		{
+			"type": "paragraph",
+			"startLine": 90,
+			"endLine": 90
+		},
+		{
+			"type": "paragraph",
+			"startLine": 92,
+			"endLine": 92
+		},
+		{
+			"type": "callout",
+			"startLine": 94,
+			"endLine": 97
+		},
+		{
+			"type": "paragraph",
+			"startLine": 99,
+			"endLine": 99
+		}
+	]
+}

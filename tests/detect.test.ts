@@ -19,7 +19,7 @@ const parsed = (text: string) => {
 };
 
 describe('parseEmbeds against measured metadataCache output', () => {
-	it.each(['embeds', 'embeds-v1', 'embeds-v1-fenced'])('%s: the same embeds, offsets, strings and table membership as the cache', (name) => {
+	it.each(['embeds', 'embeds-v1', 'embeds-v1-fenced', 'embeds-2', 'embeds-crlf'])('%s: the same embeds, offsets, strings and table membership as the cache', (name) => {
 		const text = note(name);
 		const cache = cacheOf(name);
 		const own = parsed(text);
@@ -31,6 +31,31 @@ describe('parseEmbeds against measured metadataCache output', () => {
 		const own = parsed(note('embeds'));
 		expect(own.filter((e) => e.inComment).map((e) => e.offset)).toEqual([715, 755]);
 		expect(own.filter((e) => e.inTable).map((e) => e.offset)).toEqual([233, 274]);
+	});
+
+	it('leaves out what the cache leaves out: URLs with a scheme, HTML blocks, tab-indented code', () => {
+		const own = parsed(note('embeds-2'));
+		expect(own.some((e) => /\]\((https?|s3-bridge):/.test(e.original))).toBe(false);
+		expect(own.some((e) => e.original.includes('html-details') || e.original.includes('tab-indented-code'))).toBe(false);
+		// …and keeps what it keeps, even though an upload will not rewrite all of them.
+		for (const kept of ['"タイトル")', '#見出し]]', '^abc]]', '|説明|300]]', '![[置換検証]]', '![[double-backslash.png]]', '![[in-link.png]]', '![[after-code-percent.png]]']) {
+			expect(own.some((e) => e.original.includes(kept)), kept).toBe(true);
+		}
+	});
+
+	it('tables as measured: not right after a paragraph line, and rows need a |', () => {
+		const own = parsed(note('embeds-2'));
+		const flag = (name: string) => own.find((e) => e.original.includes(name))!;
+		expect(flag('table-after-paragraph').inTable).toBe(false);
+		expect(flag('table-row.png').inTable).toBe(true);
+		expect(flag('table-lazy-row').inTable).toBe(false);
+		expect(flag('table-no-pipe').inTable).toBe(true);
+	});
+
+	it('flags embeds on quoted or callout lines with | (the cache cannot tell whether they are table rows)', () => {
+		const own = parsed(note('embeds-2'));
+		expect(own.filter((e) => e.inQuotedPipeLine).map((e) => e.original)).toEqual(['![[quote-table.png]]', '![[callout-table.png]]']);
+		expect(parsed('> a ![[x.png]]\n').map((e) => e.inQuotedPipeLine)).toEqual([false]);
 	});
 
 	it('an unclosed fence (the measured 3b case) hides everything after it, as in the cache', () => {
@@ -45,7 +70,7 @@ describe('the measured notes saved with CRLF', () => {
 	const crlf = (s: string) => s.replace(/\n/g, '\r\n');
 	const shift = (lf: string, offset: number) => offset + (lf.slice(0, offset).match(/\n/g) ?? []).length;
 
-	it.each(['embeds', 'embeds-v1', 'embeds-v1-fenced'])('%s', (name) => {
+	it.each(['embeds', 'embeds-v1', 'embeds-v1-fenced', 'embeds-2'])('%s', (name) => {
 		const lf = note(name);
 		const cache = cacheOf(name);
 		const text = crlf(lf);
@@ -105,7 +130,7 @@ describe('parseEmbeds: what it refuses to guess', () => {
 	});
 
 	it('keeps CRLF offsets as stored', () => {
-		expect(parsed('# t\r\n\r\n![[a.png]]\r\n')).toEqual([{ offset: 7, original: '![[a.png]]', inComment: false, inTable: false }]);
+		expect(parsed('# t\r\n\r\n![[a.png]]\r\n')).toEqual([{ offset: 7, original: '![[a.png]]', inComment: false, inTable: false, inQuotedPipeLine: false }]);
 	});
 });
 

@@ -196,8 +196,10 @@ describe('end to end on a measured note', () => {
 		const next = replaceRanges(text, reps);
 		expect(next).toMatch(/\| !\[f\\\|100\]\(s3-bridge:\/\/demo\/k\/\d+\.png\) \| !\[t\]\(s3-bridge:\/\/demo\/k\/\d+\.png\) \|/);
 		expect(next).toContain('%% ![[percent-comment-ignored.png]] %%');
+		// References are not embeds for the cache (measured), so only the embeds left alone remain.
 		const again = parseEmbeds(next);
 		if (!again.ok) throw new Error('unparsable');
-		expect(again.embeds.filter((e) => e.original.includes('s3-bridge://'))).toHaveLength(reps.length);
+		expect(again.embeds).toHaveLength(found.embeds.length - reps.length);
+		expect(next.match(/\]\(s3-bridge:\/\/demo\//g)).toHaveLength(reps.length);
 	});
 });
