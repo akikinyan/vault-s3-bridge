@@ -38,6 +38,7 @@ const HTML_BLOCK_6 =
 	/^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|\/?>|$)/i;
 const HTML_BLOCK_1 = /^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)/i;
 const ATX_HEADING = /^ {0,3}#{1,6}(?:\s|$)/;
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
 const DELIMITER_ROW = /^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
 
 const isBlank = (s: string) => s.trim() === '';
@@ -168,7 +169,7 @@ function classify(lines: Line[]): void {
 
 /**
  * Tables as Obsidian reads them (measured): a header row and a delimiter row with the same cell count, not
- * directly after a paragraph line, then rows that contain `|`, up to a blank line.
+ * directly after a paragraph line (a heading line, ATX or setext, is not one), then rows that contain `|`, up to a blank line.
  */
 function markTables(lines: Line[]): void {
 	const quoteDepth = (t: string) => (QUOTE.exec(t)?.[0].match(/>/g) ?? []).length;
@@ -184,7 +185,11 @@ function markTables(lines: Line[]): void {
 		const depth = quoteDepth(head.text);
 		const prev = lines[i - 1];
 		const prevText = prev ? content(prev.text) : '';
-		const paragraphBefore = prev !== undefined && prev.kind === 'normal' && !prev.inTable && quoteDepth(prev.text) === depth && !isBlank(prevText) && !ATX_HEADING.test(prevText);
+		// A heading (ATX, or a setext underline under a text line) ends the paragraph: a table may follow (measured).
+		const before = lines[i - 2];
+		const setext = SETEXT_UNDERLINE.test(prevText) && before !== undefined && before.kind === 'normal' && !isBlank(content(before.text));
+		const paragraphBefore =
+			prev !== undefined && prev.kind === 'normal' && !prev.inTable && quoteDepth(prev.text) === depth && !isBlank(prevText) && !ATX_HEADING.test(prevText) && !setext;
 		if (paragraphBefore) continue;
 		let n = i;
 		while (n < lines.length) {

@@ -65,6 +65,41 @@ describe('parseEmbeds against measured metadataCache output', () => {
 		expect(parsed('## 表\n| a | b |\n|---|---|\n| ![[x.png]] | y |\n').map((e) => e.inTable)).toEqual([true]);
 	});
 
+	it('after ATX and setext headings a table starts; after a paragraph it does not (measured)', () => {
+		const text = [
+			'# t',
+			'',
+			'## h2',
+			'| a | b |',
+			'|---|---|',
+			'| ![[x.png\\|100]] | h2 |',
+			'',
+			'### h3',
+			'| c | d |',
+			'| --- | --- |',
+			'| ![[x.png]] | h3 |',
+			'',
+			'setext',
+			'---',
+			'| e | f |',
+			'|---|---|',
+			'| ![[x.png\\|200]] | setext |',
+			'',
+			'paragraph',
+			'| g | h |',
+			'|---|---|',
+			'| ![[x.png\\|300]] | paragraph |',
+			'',
+		].join('\n');
+		expect(parsed(text).map((e) => e.inTable)).toEqual([true, true, true, false]);
+		// The cache reported tables at lines 3-5, 8-10 and 14-16, and lines 18-21 as one paragraph.
+		const p = parseEmbeds(text);
+		if (!p.ok) throw new Error();
+		const embeds = p.embeds.map(({ offset, original }) => ({ offset, original }));
+		const tables = [3, 8, 14].map((startLine) => ({ startLine, endLine: startLine + 2 }));
+		expect(compareWithCache(text, p.embeds, { embeds, tables, comments: [] })).toBeUndefined();
+	});
+
 	it('an unclosed fence (the measured 3b case) hides everything after it, as in the cache', () => {
 		expect(parsed(note('embeds-v1-fenced')).map((e) => e.offset)).not.toContain(967);
 		expect(parsed(note('embeds-v1')).map((e) => e.offset)).toContain(967);
