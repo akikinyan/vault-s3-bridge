@@ -39,7 +39,10 @@ export interface PendingItem {
 	key: string;
 	altKey?: string;
 	state: PendingState;
-	/** A Put to this item's keys once had an unknown outcome. Never goes back to false. */
+	/**
+	 * An object of this item may exist: a Put had an unknown outcome, left putting without a recorded rejection,
+	 * or the item reached done-unrecorded, delivered or unresolved. Never goes back to false. Blocks failure removal.
+	 */
 	uncertain: boolean;
 	/** A Put to this item's keys was sent in some session. Never goes back to false. */
 	putSent: boolean;
@@ -69,7 +72,7 @@ export type PendingStatus = 'unloaded' | 'ready' | 'damaged';
 
 export type PendingResult =
 	| { ok: true }
-	| { ok: false; reason: 'not-ready' | 'write-failed' | 'unknown-item' | 'duplicate-item' | 'not-removable' | 'not-found' | 'damaged-file' };
+	| { ok: false; reason: 'not-ready' | 'write-failed' | 'unknown-item' | 'duplicate-item' | 'not-removable' | 'wrong-state' | 'not-found' | 'damaged-file' };
 
 type PendingFailure = Extract<PendingResult, { ok: false }>['reason'];
 
@@ -126,6 +129,9 @@ export function nodePendingIO(dir: string): PendingIO {
 
 // --- validation -------------------------------------------------------------
 
+/** States in which an object of the item exists or may exist (putting is handled when the item leaves it). */
+const MAY_EXIST: ReadonlySet<PendingState> = new Set(['indeterminate', 'done-unrecorded', 'delivered', 'unresolved']);
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== '';
@@ -174,7 +180,7 @@ export function parseItem(raw: unknown): PendingItem | undefined {
 		key: r.key as string,
 		state: r.state,
 		// A record left in putting means the process ended after the Put was sent: its outcome is unknown.
-		uncertain: r.uncertain || sent,
+		uncertain: r.uncertain || sent || MAY_EXIST.has(r.state),
 		putSent: r.putSent || sent,
 		preparedKey: r.preparedKey as string,
 		phase: r.phase,
@@ -208,14 +214,15 @@ const serialize = (deviceId: string, items: readonly PendingItem[]) => JSON.stri
 
 export type OtherDeviceFile = { deviceId: string; count: number } | { deviceId: string; damaged: true };
 
-/** How a failed or excluded item may prove that its Put did not create an object (7-2). */
-export type FailureEvidence = 'no-put' | 'put-rejected';
 
 export class PendingStore {
 	private state: PendingStatus = 'unloaded';
 	private list: DeepReadonly<PendingItem[]> = deepFreeze([]);
 	private queue: Promise<unknown> = Promise.resolve();
-	/** Items whose object may exist, kept in memory even when writing that fact to disk failed. */
+	/**
+	 * Items whose object may exist, known in memory even when writing that fact failed. Every later write of the
+	 * file persists it as uncertain, so it survives a restart.
+	 */
 	private readonly unsafe = new Set<string>();
 	private readonly fileName: string;
 
@@ -273,6 +280,18 @@ export class PendingStore {
 		return this.edit(ids, (item) => ({ ...item, state: 'putting', putSent: true }));
 	}
 
+	/**
+	 * The Put was answered with a definite rejection (e.g. 403, 409, BadDigest, or 412 followed by a different
+	 * object): it created nothing. The only way to leave putting without making the item uncertain.
+	 */
+	markPutRejected(ids: readonly string[], reason?: string): Promise<PendingResult> {
+		return this.edit(
+			ids,
+			(item) => ({ ...item, state: 'recorded', ...(reason === undefined ? {} : { reason }) }),
+			(item) => item.state === 'putting',
+		);
+	}
+
 	/** The Put's outcome is unknown. The item is treated as uncertain in memory even if this write fails. */
 	markIndeterminate(ids: readonly string[], reason?: string): Promise<PendingResult> {
 		for (const id of ids) this.unsafe.add(id);
@@ -285,15 +304,11 @@ export class PendingStore {
 	}
 
 	/**
-	 * Failed or excluded items: only when no Put of this item can have created an object, judged over all
-	 * sessions recorded in the item. A putting item needs the caller's proof that this Put was rejected.
+	 * Failed or excluded items: only when no Put of this item can have created an object, over all sessions
+	 * recorded in the item. Every Put ever sent was recorded as rejected exactly when the item is not uncertain.
 	 */
-	removeFailed(ids: readonly string[], evidence: FailureEvidence): Promise<PendingResult> {
-		return this.remove(ids, (item) => {
-			if (item.uncertain || this.unsafe.has(item.id)) return false;
-			if (item.state === 'putting') return evidence === 'put-rejected';
-			return item.state === 'recorded' || item.state === 'stopped';
-		});
+	removeFailed(ids: readonly string[]): Promise<PendingResult> {
+		return this.remove(ids, (item) => !item.uncertain && !this.unsafe.has(item.id) && (item.state === 'recorded' || item.state === 'stopped'));
 	}
 
 	/** The user confirmed discarding the records (the UI warns that objects may remain). */
@@ -395,28 +410,43 @@ export class PendingStore {
 	private change(next: (list: PendingItem[]) => PendingItem[] | PendingFailure): Promise<PendingResult> {
 		return this.enqueue(async () => {
 			if (this.state !== 'ready') return { ok: false, reason: 'not-ready' } as const;
-			const result = next(cloneData(this.list) as PendingItem[]);
-			if (typeof result === 'string') return { ok: false, reason: result } as const;
+			const proposed = next(cloneData(this.list) as PendingItem[]);
+			if (typeof proposed === 'string') return { ok: false, reason: proposed } as const;
+			// Applied to every item written, not only the edited ones: what is known in memory reaches the disk.
+			const result = proposed.map((i) => (!i.uncertain && (this.unsafe.has(i.id) || MAY_EXIST.has(i.state)) ? { ...i, uncertain: true } : i));
 			try {
 				await this.io.writeAtomic(this.fileName, serialize(this.deviceId, result));
 			} catch {
 				return { ok: false, reason: 'write-failed' } as const;
 			}
 			this.list = deepFreeze(result);
+			for (const i of result) if (i.uncertain) this.unsafe.add(i.id);
 			return { ok: true } as const;
 		});
 	}
 
-	private edit(ids: readonly string[], f: (item: PendingItem) => PendingItem): Promise<PendingResult> {
+	/**
+	 * @param fromState when given, every item must satisfy it (otherwise nothing changes); used by markPutRejected,
+	 * which is also the only edit allowed to leave putting without marking the item uncertain.
+	 */
+	private edit(ids: readonly string[], f: (item: PendingItem) => PendingItem, fromState?: (item: PendingItem) => boolean): Promise<PendingResult> {
 		return this.change((list) => {
 			const wanted = new Set(ids);
 			if ([...wanted].some((id) => !list.some((i) => i.id === id))) return 'unknown-item';
+			if (fromState && !list.filter((i) => wanted.has(i.id)).every(fromState)) return 'wrong-state';
 			const at = this.now().toISOString();
 			return list.map((item) => {
 				if (!wanted.has(item.id)) return item;
 				const next = f(item);
+				// Leaving putting without a recorded rejection means the Put's outcome is unknown.
+				const leftPutUnanswered = item.state === 'putting' && next.state !== 'putting' && !fromState;
 				// The flags only ever grow, whatever the caller passed.
-				return { ...next, uncertain: item.uncertain || next.uncertain, putSent: item.putSent || next.putSent, updatedAt: at };
+				return {
+					...next,
+					uncertain: item.uncertain || next.uncertain || leftPutUnanswered,
+					putSent: item.putSent || next.putSent || next.state === 'putting',
+					updatedAt: at,
+				};
 			});
 		});
 	}

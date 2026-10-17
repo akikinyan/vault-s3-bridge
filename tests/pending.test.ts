@@ -126,7 +126,7 @@ describe('PendingStore — loading', () => {
 		io.files.set(OWN_FILE, fileText(OWN, [storedItem('p', { state: 'putting' }), storedItem('i', { state: 'indeterminate' }), storedItem('r')]));
 		const store = await storeWith(io);
 		expect(store.items.map((i) => [i.id, i.uncertain, i.putSent])).toEqual([['p', true, true], ['i', true, true], ['r', false, false]]);
-		expect(await store.removeFailed(['p'], 'put-rejected')).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.removeFailed(['p'])).toEqual({ ok: false, reason: 'not-removable' });
 	});
 });
 
@@ -195,23 +195,74 @@ describe('PendingStore — removal rules (7-2)', () => {
 	}
 
 	it('removes a failed item only when no Put of it can have created an object', async () => {
-		expect(await (await itemIn('recorded')).store.removeFailed(['a'], 'no-put')).toEqual({ ok: true });
+		expect(await (await itemIn('recorded')).store.removeFailed(['a'])).toEqual({ ok: true });
 		// Earlier sessions sent Puts that all ended in a definite 4xx (e.g. 409 three times, then stopped).
-		expect(await (await itemIn('stopped', { putSent: true })).store.removeFailed(['a'], 'no-put')).toEqual({ ok: true });
+		expect(await (await itemIn('stopped', { putSent: true })).store.removeFailed(['a'])).toEqual({ ok: true });
 		for (const state of ['done-unrecorded', 'delivered', 'unresolved'] as const) {
-			expect(await (await itemIn(state)).store.removeFailed(['a'], 'put-rejected'), state).toEqual({ ok: false, reason: 'not-removable' });
+			expect(await (await itemIn(state)).store.removeFailed(['a']), state).toEqual({ ok: false, reason: 'not-removable' });
 		}
-		expect(await (await itemIn('stopped', { uncertain: true, putSent: true })).store.removeFailed(['a'], 'no-put')).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await (await itemIn('stopped', { uncertain: true, putSent: true })).store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
 	});
 
-	it('removes a putting item only with proof that this Put was rejected', async () => {
+	it('leaves putting without uncertainty only through a recorded rejection', async () => {
 		const io = new FakeIO();
 		const store = await storeWith(io);
-		await store.add([newItem('a')]);
+		await store.add([newItem('a'), newItem('b')]);
+		await store.markPutting(['a', 'b']);
+		expect(await store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' }); // still putting
+		expect(await store.markPutRejected(['a'], 'conflict')).toEqual({ ok: true });
+		expect(store.items[0]).toMatchObject({ state: 'recorded', putSent: true, uncertain: false, reason: 'conflict' });
+		expect(await store.markPutRejected(['a'])).toEqual({ ok: false, reason: 'wrong-state' });
+		// b stops without saying how its Put ended: that Put may have created the object.
+		expect(await store.update(['b'], { state: 'stopped' })).toEqual({ ok: true });
+		expect(store.items[1]).toMatchObject({ state: 'stopped', putSent: true, uncertain: true });
+		expect(await store.removeFailed(['b'])).toEqual({ ok: false, reason: 'not-removable' });
+		const again = await storeWith(io);
+		expect(await again.removeFailed(['b'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await again.removeFailed(['a'])).toEqual({ ok: true });
+	});
+
+	it('keeps an existing object protected after the item moves on (done-unrecorded, then stopped on resume)', async () => {
+		const io = new FakeIO();
+		io.files.set(OWN_FILE, fileText(OWN, [storedItem('a', { state: 'done-unrecorded', putSent: true })]));
+		const store = await storeWith(io);
+		expect(await store.update(['a'], { state: 'stopped', reason: 'aborted' })).toEqual({ ok: true });
+		expect(io.itemsOf(OWN_FILE)[0]).toMatchObject({ state: 'stopped', uncertain: true });
+		expect(await (await storeWith(io)).removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+	});
+
+	it('protects an item that reused an existing object without any Put of its own', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		await store.add([newItem('a'), newItem('b')]);
+		// a: Head matched (reused) and the state was saved, then a later pass stopped it.
+		expect(await store.update(['a'], { state: 'done-unrecorded' })).toEqual({ ok: true });
+		expect(await store.update(['a'], { state: 'stopped' })).toEqual({ ok: true });
+		expect(await (await storeWith(io)).removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		// b: the same, but saving done-unrecorded failed; memory still says recorded.
+		io.failWrite = true;
+		expect(await store.update(['b'], { state: 'done-unrecorded' })).toEqual({ ok: false, reason: 'write-failed' });
+		io.failWrite = false;
+		expect(store.items[1]).toMatchObject({ state: 'recorded' });
+		expect(await store.removeFailed(['b'])).toEqual({ ok: false, reason: 'not-removable' });
+	});
+
+	it('persists an unknown outcome whose own write failed with the next write of the file', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		await store.add([newItem('a'), newItem('b')]);
 		await store.markPutting(['a']);
-		expect(await store.removeFailed(['a'], 'no-put')).toEqual({ ok: false, reason: 'not-removable' });
-		expect(await store.removeFailed(['a'], 'put-rejected')).toEqual({ ok: true });
-		expect(io.itemsOf(OWN_FILE)).toEqual([]);
+		io.failWrite = true;
+		expect(await store.markIndeterminate(['a'])).toEqual({ ok: false, reason: 'write-failed' });
+		io.failWrite = false;
+		// A later write of the same item, and a write of another item, both carry the fact to the disk.
+		expect(await store.update(['b'], { state: 'stopped' })).toEqual({ ok: true });
+		expect(io.itemsOf(OWN_FILE)[0]).toMatchObject({ id: 'a', uncertain: true });
+		expect(await store.update(['a'], { state: 'stopped' })).toEqual({ ok: true });
+		const again = await storeWith(io);
+		expect(again.items[0]).toMatchObject({ id: 'a', state: 'stopped', uncertain: true });
+		expect(await again.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await again.removeFailed(['b'])).toEqual({ ok: true });
 	});
 
 	it('remembers an unknown outcome in memory when writing it fails', async () => {
@@ -224,8 +275,8 @@ describe('PendingStore — removal rules (7-2)', () => {
 		expect(await store.update(['b'], { state: 'done-unrecorded' })).toEqual({ ok: false, reason: 'write-failed' });
 		io.failWrite = false;
 		expect(store.items.map((i) => [i.state, i.uncertain])).toEqual([['putting', false], ['putting', false]]); // memory follows the file
-		expect(await store.removeFailed(['a'], 'put-rejected')).toEqual({ ok: false, reason: 'not-removable' });
-		expect(await store.removeFailed(['b'], 'put-rejected')).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.removeFailed(['b'])).toEqual({ ok: false, reason: 'not-removable' });
 		// The disk still says putting, which the next start reads as uncertain.
 		expect((await storeWith(io)).items.every((i) => i.uncertain)).toBe(true);
 	});
@@ -241,7 +292,7 @@ describe('PendingStore — removal rules (7-2)', () => {
 		const io = new FakeIO();
 		io.files.set(OWN_FILE, fileText(OWN, [storedItem('a'), storedItem('b', { state: 'unresolved' })]));
 		const store = await storeWith(io);
-		expect(await store.removeFailed(['a', 'b'], 'no-put')).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.removeFailed(['a', 'b'])).toEqual({ ok: false, reason: 'not-removable' });
 		expect(ids(store)).toEqual(['a', 'b']);
 	});
 });
@@ -268,7 +319,7 @@ describe('PendingStore — other devices (7-5)', () => {
 		expect(await store.takeOver(OTHER)).toEqual({ ok: true });
 		expect(io.log).toEqual([`write ${OWN_FILE}`, `unlink ${OTHER_FILE}`]);
 		expect(store.items.map((i) => [i.id, i.state, i.uncertain])).toEqual([['a', 'stopped', false], ['x', 'putting', true]]);
-		expect(await store.removeFailed(['x'], 'put-rejected')).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await store.removeFailed(['x'])).toEqual({ ok: false, reason: 'not-removable' });
 	});
 
 	it('keeps items that reached the other file after it was read', async () => {
