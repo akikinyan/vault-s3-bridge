@@ -1,0 +1,174 @@
+{
+	"embeds": [
+		{
+			"offset": 80,
+			"original": "![[assets/examples/png-plain.png]]"
+		},
+		{
+			"offset": 121,
+			"original": "![alt](assets/examples/webp-plain.webp)"
+		},
+		{
+			"offset": 166,
+			"original": "![空白 名](<assets/examples/gif-static.gif>)"
+		},
+		{
+			"offset": 233,
+			"original": "![[assets/examples/png-meta.png\\|100]]"
+		},
+		{
+			"offset": 274,
+			"original": "![t](assets/examples/jpeg-gps-rot6.jpg)"
+		},
+		{
+			"offset": 336,
+			"original": "![[assets/examples/webp-meta.webp]]"
+		},
+		{
+			"offset": 672,
+			"original": "![[assets/examples/jpeg-gps-rot1.jpg]]"
+		},
+		{
+			"offset": 715,
+			"original": "![[percent-comment-ignored.png]]"
+		},
+		{
+			"offset": 755,
+			"original": "![[percent-block-ignored.png]]"
+		},
+		{
+			"offset": 975,
+			"original": "![[list-continuation-4spaces.png]]"
+		},
+		{
+			"offset": 1084,
+			"original": "![[nested-quote.png]]"
+		},
+		{
+			"offset": 1111,
+			"original": "![[assets/examples/apng-anim.png]]"
+		}
+	],
+	"sections": [
+		{
+			"type": "yaml",
+			"startLine": 0,
+			"endLine": 3
+		},
+		{
+			"type": "heading",
+			"startLine": 5,
+			"endLine": 5
+		},
+		{
+			"type": "paragraph",
+			"startLine": 7,
+			"endLine": 7
+		},
+		{
+			"type": "paragraph",
+			"startLine": 9,
+			"endLine": 9
+		},
+		{
+			"type": "paragraph",
+			"startLine": 11,
+			"endLine": 11
+		},
+		{
+			"type": "table",
+			"startLine": 13,
+			"endLine": 15
+		},
+		{
+			"type": "callout",
+			"startLine": 17,
+			"endLine": 18
+		},
+		{
+			"type": "code",
+			"startLine": 20,
+			"endLine": 22
+		},
+		{
+			"type": "code",
+			"startLine": 24,
+			"endLine": 26
+		},
+		{
+			"type": "blockquote",
+			"startLine": 28,
+			"endLine": 30
+		},
+		{
+			"type": "list",
+			"startLine": 32,
+			"endLine": 35
+		},
+		{
+			"type": "paragraph",
+			"startLine": 37,
+			"endLine": 37
+		},
+		{
+			"type": "paragraph",
+			"startLine": 39,
+			"endLine": 39
+		},
+		{
+			"type": "comment",
+			"startLine": 41,
+			"endLine": 43
+		},
+		{
+			"type": "html",
+			"startLine": 45,
+			"endLine": 45
+		},
+		{
+			"type": "paragraph",
+			"startLine": 47,
+			"endLine": 47
+		},
+		{
+			"type": "code",
+			"startLine": 49,
+			"endLine": 49
+		},
+		{
+			"type": "math",
+			"startLine": 51,
+			"endLine": 53
+		},
+		{
+			"type": "paragraph",
+			"startLine": 55,
+			"endLine": 55
+		},
+		{
+			"type": "list",
+			"startLine": 57,
+			"endLine": 58
+		},
+		{
+			"type": "paragraph",
+			"startLine": 60,
+			"endLine": 60
+		},
+		{
+			"type": "html",
+			"startLine": 62,
+			"endLine": 64
+		},
+		{
+			"type": "blockquote",
+			"startLine": 66,
+			"endLine": 66
+		},
+		{
+			"type": "paragraph",
+			"startLine": 68,
+			"endLine": 69
+		}
+	]
+}

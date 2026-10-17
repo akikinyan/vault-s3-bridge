@@ -23,7 +23,8 @@ export function checkKey(key: string): 'invalid-key' | undefined {
 	return undefined;
 }
 
-function encodeSegment(segment: string): string {
+/** Percent-encodes one key segment so the result contains only [A-Za-z0-9-_.~%]. */
+export function encodeSegment(segment: string): string {
 	return encodeURIComponent(segment).replace(EXTRA, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 

@@ -36,6 +36,25 @@ export function validateProxyUrl(value: string | undefined): ValidationError | u
 	return undefined;
 }
 
+/**
+ * A public base URL is joined with an encoded key exactly once (9-3): https only, no user information, query or
+ * fragment, and a path of [A-Za-z0-9-_.~/%] only.
+ */
+export function validatePublicBaseUrl(value: string): 'public-url-invalid' | undefined {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return 'public-url-invalid';
+	}
+	if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return 'public-url-invalid';
+	if (value.includes('?') || value.includes('#')) return 'public-url-invalid';
+	// Check the path as written: the URL parser would percent-encode other characters and hide them.
+	const rawPath = value.replace(/^https:\/\/[^/]*/i, '');
+	if (!/^[A-Za-z0-9\-_.~/%]*$/.test(rawPath)) return 'public-url-invalid';
+	return undefined;
+}
+
 function isHttpsUrl(value: string): boolean {
 	try {
 		return new URL(value).protocol === 'https:';
