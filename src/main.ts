@@ -21,6 +21,7 @@ import { nodePendingIO, PendingStore } from './upload/pending';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
 import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
+import { runUploadCommand, uploadTarget } from './ui/uploadFlow';
 
 const SWEEP_INTERVAL_MS = 30_000;
 
@@ -109,6 +110,18 @@ export default class VaultS3BridgePlugin extends Plugin {
 			// A plain callback keeps the command listed in reading mode, where it explains what to do.
 			callback: () => this.insertReference(),
 		});
+		this.addCommand({ id: 'upload-current-note', name: t('command.upload'), callback: () => void this.upload(false) });
+		this.addCommand({ id: 'preview-upload', name: t('command.previewUpload'), callback: () => void this.upload(true) });
+	}
+
+	private async upload(preview: boolean): Promise<void> {
+		const file = uploadTarget(this.app);
+		if (!file) {
+			new Notice(t('insert.noEditor'));
+			return;
+		}
+		await runUploadCommand(this.uploadHost, file, preview);
+		this.settingTab?.update();
 	}
 
 	private insertReference(): void {
