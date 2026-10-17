@@ -218,6 +218,8 @@ export interface UploadUi {
 export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): { deps: CommandDeps; dispose(): void } {
 	const { app, store } = host;
 	const watch = watchSources(app);
+	// 9-2: "open when the job started" is decided now, not when the links are applied after confirming.
+	const note = noteAccess(app, file);
 	const authGeneration = (id: string) => profileOf(store.device, id)?.generation;
 	const deps: CommandDeps = {
 		lock: host.lock,
@@ -255,7 +257,7 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 						const f = app.vault.getFileByPath(path);
 						return f ? new Uint8Array(await app.vault.readBinary(f)) : undefined;
 					},
-					note: noteAccess(app, file),
+					note,
 					copy: copyToClipboard,
 					sleep: (ms, signal) =>
 						new Promise<void>((resolve, reject) => {
