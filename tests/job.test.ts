@@ -674,6 +674,50 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
 	});
 
+	it.each([
+		['closed note', 'replace' as const, false],
+		['open note', 'replace' as const, true],
+		['copy chosen', 'copy' as const, false],
+	])('data.json unreadable after the last Put (%s): nothing written or copied, the record stays delivered', async (_, apply, open) => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const ed = new FakeEditor(note);
+		if (open) w.editors.push(ed);
+		const p = await plan(w, note);
+		// The checkpoint still runs its callback, with the old settings and readOnly set: no exception to catch.
+		atLinkPhase(w, 1, () => Promise.resolve(void (w.storeIO.disk = undefined)));
+		const r = await runJob(p, confirm(w, priv, apply), w.run);
+		expect(r.link).toEqual({ kind: 'none' });
+		expect(r.files.map((f) => [f.outcome, f.linked])).toEqual([['delivered', false]]);
+		expect(w.disk.text).toBe(note);
+		expect(ed.transactions).toBe(0);
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('data.json unreadable as the closed note is written: the file is left unchanged', async () => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		const process = w.run.note.process;
+		w.run = {
+			...w.run,
+			note: {
+				...w.run.note,
+				process: async (fn) => {
+					// Becomes read-only between the last checkpoint and the write.
+					w.storeIO.disk = undefined;
+					await w.settings.reload();
+					return process(fn);
+				},
+			},
+		};
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.link).toEqual({ kind: 'none' });
+		expect(w.disk.text).toBe(note);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
 	it('a modify event that arrives as the note is written: that file is left out, the others are linked (10-2)', async () => {
 		const note = '![[a.png]] ![[b.png]]';
 		const w = await world([priv, pub], note);
@@ -1114,6 +1158,16 @@ describe('copyDelivered (7-4)', () => {
 			['unresolved', 'private-recorded'],
 			['unresolved', 'private-recorded'],
 		]);
+	});
+
+	it('data.json unreadable: nothing is copied and no record changes', async () => {
+		const w = await world();
+		await deliveredJob(w, pub);
+		await w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
+		w.storeIO.disk = undefined;
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: false, skipped: [] });
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
 	});
 
 	it('a connection that no longer points to the recorded storage is not linked', async () => {

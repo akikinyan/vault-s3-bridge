@@ -555,17 +555,20 @@ interface LinkEntry {
 const LINK_ATTEMPTS = 5;
 
 /**
- * Why links may not be written at this moment: the job's connection is no longer the confirmed, active one (I4;
- * the Markdown would name a storage the user did not confirm), a public file is now recorded as private (I2), or
- * the vault reported a change of a source (10-2). The authentication generation does not matter for a link.
+ * Why links may not be written at this moment: the settings could not be read as they are now (a checkpoint then
+ * runs with the last ones it had, so I2 and I4 cannot be checked), the job's connection is no longer the
+ * confirmed, active one (I4; the Markdown would name a storage the user did not confirm), a public file is now
+ * recorded as private (I2), or the vault reported a change of a source (10-2). The authentication generation does
+ * not matter for a link.
  */
 function linkBlocks(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, settings: DeepReadonly<PluginSettings>, entries: readonly LinkEntry[]) {
+	const readOnly = deps.settings.readOnly !== undefined;
 	const c = settings.connections.find((x) => x.id === plan.target.connectionId);
 	const connection = !c || stableStringify(c) !== confirmed.connection || connectionState(settings, c) !== 'active';
 	const recorded = new Set(settings.privateFiles);
 	const privateRecorded = plan.target.classification === 'public' ? entries.filter((e) => recorded.has(e.f.sourceSha256) || recorded.has(e.g.sentSha256)) : [];
 	const changed = entries.filter((e) => !privateRecorded.includes(e) && deps.sourceChanged(e.f.sourcePath));
-	return { connection, privateRecorded, changed, clear: !connection && privateRecorded.length === 0 && changed.length === 0 };
+	return { readOnly, connection, privateRecorded, changed, clear: !readOnly && !connection && privateRecorded.length === 0 && changed.length === 0 };
 }
 
 /**
@@ -622,10 +625,15 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 				return { applying: applyToNote(deps.note, plan.snapshot, replacements(), allowed) };
 			})
 			.catch(() => undefined);
-		// Settings unreadable: nothing is written; the records stay delivered for a later copy.
+		// The settings could not be checked: nothing is written; the records stay delivered for a later copy.
 		if (!step) break;
 		if ('blocks' in step) {
 			const { blocks } = step;
+			if (blocks.readOnly) {
+				// Nothing is written and no record changes; the records stay delivered for a later copy.
+				for (const e of entries) e.r.reason = 'read-only';
+				break;
+			}
 			if (blocks.connection) {
 				// I4: delivered under the confirmed connection; the copy later uses the connection as it is then.
 				for (const e of entries) e.r.reason = 'connection-changed';
@@ -896,7 +904,7 @@ export async function resumeCommand(deps: ResumeCommandDeps): Promise<ResumeStop
 export interface CopyDeps {
 	lock: JobLock;
 	pending: PendingStore;
-	settings: Pick<SettingsStore, 'current' | 'checkpoint'>;
+	settings: Pick<SettingsStore, 'current' | 'checkpoint' | 'readOnly'>;
 	copy(text: string): Promise<boolean>;
 }
 
@@ -945,12 +953,14 @@ export async function copyDelivered(deps: CopyDeps, notePath: string): Promise<C
 			// The copy starts inside the checkpoint that found nothing more to hold back, after every await (I2).
 			const step = await deps.settings
 				.checkpoint((s) => {
+					// Read-only (e.g. data.json unreadable): these are the last settings it had, not the current ones.
+					if (deps.settings.readOnly !== undefined) return undefined;
 					const ev = evaluate(s, items);
 					const held = ev.skipped.filter((x) => x.reason === 'private-recorded');
 					return { ev, held, copying: held.length === 0 && ev.ready.length > 0 ? deps.copy(ev.lines.join('\n')) : undefined };
 				})
 				.catch(() => undefined);
-			// Settings unreadable: nothing is copied and no record changes.
+			// The settings could not be checked: nothing is copied and no record changes.
 			if (!step) return { copied: 0, ok: false, skipped: privateRecorded };
 			const { ev, held, copying } = step;
 			if (held.length > 0) {
