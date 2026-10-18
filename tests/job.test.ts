@@ -466,6 +466,36 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(w.pending.items.map((i) => [i.sourcePath, i.state])).toEqual([['img/a.png', 'unresolved']]);
 	});
 
+	it('a source changed while its existing object is checked by Head (reuse): no link', async () => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		w.s3.objects.set('k/a.png', checksumOf(sha256Hex(PNG_A)));
+		w.s3.on('head', (key) => {
+			w.changed.add('img/a.png');
+			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT' };
+		});
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.find((f) => f.sourcePath === 'img/a.png')).toMatchObject({ linked: false });
+		expect(w.disk.text).toBe('![[a.png]] ![b](s3-bridge://work/k/b.png)');
+		expect(w.s3.ops()).not.toContain('put:k/a.png');
+	});
+
+	it('the connection is deleted while a Put is in flight: aborted, the record kept as uncertain, the note unchanged', async () => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		w.s3.on('put', (_key, signal) => {
+			void w.settings.mutate(deleteConnectionOp(priv.id));
+			return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+		});
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.aborted).toBe('connection-changed');
+		expect(w.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+		expect(w.pending.items.map((i) => [i.sourcePath, i.state, i.uncertain, i.putSent])).toEqual([['img/a.png', 'stopped', true, true]]);
+		expect(w.disk.text).toBe(note);
+	});
+
 	it('a modify event before the Put leaves the file out without sending (bytes unchanged)', async () => {
 		const note = '![[a.png]]';
 		const w = await world([priv, pub], note);
