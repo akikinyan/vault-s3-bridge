@@ -4,4 +4,5 @@ export class Notice {}
 export const getLanguage = (): string => 'en';
 export class Modal {}
 export class MarkdownView {}
+export class TFile {}
 export class Setting {}
