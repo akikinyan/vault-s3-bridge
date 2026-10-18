@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { saveConnectionOp } from '../src/settings/ops';
+import { addPrivateFilesOp, saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore } from '../src/settings/store';
 import type { StorageConnection } from '../src/settings/types';
 import { type NewPendingItem, PendingStore, pendingFileName } from '../src/upload/pending';
@@ -579,5 +579,87 @@ describe('terminated after the N-th record write, then resumed (7-3, in process)
 		expect(r).toMatchObject([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
 		expect([...s.s3.objects.keys()]).toEqual(['k/a.png']);
 		expect(pendingFileName(OWN)).toBe(`pending-${OWN}.json`);
+	});
+});
+
+describe('Step 4: privacy and recovery paths', () => {
+	const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+	const PUB_PRIVATE_CHECK = 'private-recorded';
+
+	it('a private upload that fails keeps its hashes recorded (Put 403, 409 three times)', async () => {
+		const forbidden = await setup();
+		forbidden.s3.on('put', () => Promise.reject(sdkError(403, 'AccessDenied')));
+		expect((await sendGroup([item('a')], BODY, forbidden.deps))[0]).toMatchObject({ outcome: 'failed' });
+		expect(forbidden.settings.current.privateFiles).toEqual([SOURCE_A, SENT].sort());
+		const conflict = await setup();
+		for (let i = 0; i < 3; i++) conflict.s3.on('put', () => Promise.reject(sdkError(409, 'ConditionalRequestConflict')));
+		expect((await sendGroup([item('a')], BODY, conflict.deps))[0]).toMatchObject({ outcome: 'failed', reason: 'conflict' });
+		expect(conflict.settings.current.privateFiles).toEqual([SOURCE_A, SENT].sort());
+	});
+
+	it('I1 cannot be saved for the only item: nothing is requested', async () => {
+		const s = await setup();
+		s.storeIO.failSave = true;
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'excluded', reason: 'private-not-saved' }]);
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('missing KMS permission (Head 403 → Put 412 → Head 403): stopped, no alternate key, the record stays', async () => {
+		const s = await setup();
+		s.s3.on('head', () => Promise.reject(sdkError(403, 'Forbidden')));
+		s.s3.on('put', () => Promise.reject(sdkError(412, 'PreconditionFailed')));
+		s.s3.on('head', () => Promise.reject(sdkError(403, 'Forbidden')));
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'stopped', reason: 'permission' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png', 'head:k/a.png']);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped' });
+	});
+
+	it('I2 after a 412: content recorded as private meanwhile is not reused for a public link', async () => {
+		const s = await setup();
+		s.s3.on('put', async () => {
+			await s.settings.mutate(addPrivateFilesOp([SENT]));
+			s.s3.objects.set('k/a.png', checksumOf(SENT));
+			throw sdkError(412, 'PreconditionFailed');
+		});
+		const [r] = await sendGroup([pubItem('x')], BODY, s.deps);
+		expect(r).toMatchObject({ reason: PUB_PRIVATE_CHECK });
+		expect(r?.outcome).not.toBe('delivered');
+		expect(r?.key).toBeUndefined();
+		expect(s.settings.current.history).toEqual([]);
+	});
+
+	it('I2 on resume: a public record whose content became private is not delivered even when the object matches', async () => {
+		const s = await setup();
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound'))).on('put', timeout).on('head', timeout);
+		expect((await sendGroup([pubItem('x')], BODY, s.deps))[0]).toMatchObject({ outcome: 'indeterminate' });
+		await s.settings.mutate(addPrivateFilesOp([SOURCE_A]));
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.calls.length = 0;
+		const [r] = await resumeGroup(['x'], s.deps);
+		expect(r?.outcome).not.toBe('delivered');
+		expect(r?.key).toBeUndefined();
+		expect(s.s3.ops().filter((o) => o.startsWith('put:'))).toEqual([]);
+		expect(s.settings.current.history).toEqual([]);
+	});
+
+	it('resumed in the next month: the recorded key is used, one object', async () => {
+		const s = await setup();
+		const key = 'k/2026/10/a.png';
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound'))).on('put', timeout).on('head', timeout);
+		expect((await sendGroup([item('a', { key, preparedKey: key })], BODY, s.deps))[0]).toMatchObject({ outcome: 'indeterminate' });
+		const restarted = new PendingStore(s.pendingIO, OWN);
+		await restarted.load();
+		const r = await resumeGroup(['a'], { ...s.deps, pending: restarted, now: () => new Date('2026-11-02T00:00:00Z') });
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key }]);
+		expect(s.s3.ops().every((o) => o.endsWith(key))).toBe(true);
+		expect([...s.s3.objects.keys()]).toEqual([key]);
+	});
+
+	it('the putting record cannot be written: no Put', async () => {
+		const s = await setup();
+		s.pendingIO.crashAfter = 1;
+		const [r] = await sendGroup([item('a')], BODY, s.deps);
+		expect(r?.outcome).not.toBe('delivered');
+		expect(s.s3.ops()).not.toContain('put:k/a.png');
 	});
 });
