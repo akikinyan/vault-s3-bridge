@@ -88,7 +88,9 @@ try {
 	report(compareHead(h, sent) === 'match', 'b  Head returns the same full-object SHA-256', `type=${h.ChecksumType}`);
 	report(h.ContentType === 'image/png' && h.ContentLength === body.byteLength, 'b  Content-Type and length as sent');
 	report(h.ChecksumCRC32 === undefined && h.ChecksumCRC64NVME === undefined, 'b  no checksum added by the SDK');
-	const again = await errorOf(client.send(putCommand(bucket, keyA, imageBytes(), sent, 'png'), { abortSignal: signal }));
+	// Different content with its own checksum: S3 checks the checksum before If-None-Match.
+	const other = imageBytes();
+	const again = await errorOf(client.send(putCommand(bucket, keyA, other, sha256(other), 'png'), { abortSignal: signal }));
 	const againOutcome = again ? classifyS3Outcome('put', again, false).outcome : 'succeeded';
 	const h2 = await head(keyA);
 	report(againOutcome === 'precondition' && h2.ETag === h.ETag, 'c  second Put to the same key is refused', againOutcome);
