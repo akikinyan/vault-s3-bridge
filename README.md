@@ -125,7 +125,7 @@ Supported storage: S3 general purpose buckets with SSE-S3 or SSE-KMS. Directory 
 | Tell a missing object apart from a denied one (optional) | `s3:ListBucket` |
 | Private previews | `s3:GetObject` |
 | Connection test (bucket reachability and Block Public Access) | `s3:ListBucket`, `s3:GetBucketPublicAccessBlock` |
-| Connection test, optional write test (under `.vault-s3-bridge/connection-test/`) | `s3:PutObject`, `s3:DeleteObject`, `s3:GetBucketVersioning` |
+| Connection test, optional write test (under `.vault-s3-bridge/connection-test/`) | `s3:PutObject`, `s3:DeleteObject`, `s3:GetBucketVersioning` (and `s3:DeleteObjectVersion` on buckets with versioning) |
 
 Without `kms:Decrypt`, an upload can succeed while the later checksum checks fail. The plugin then stops and keeps the record instead of uploading another copy.
 
