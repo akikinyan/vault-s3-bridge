@@ -768,3 +768,110 @@ describe('Step 4: the reason of a refused Put', () => {
 		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'failed', reason: 'failed' }]);
 	});
 });
+
+describe('Step 4: 6-6 — the state kept for each outcome', () => {
+	const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+	const absent = () => Promise.reject(sdkError(404, 'NotFound'));
+	/** A record left in putting by an earlier session, resumed in recover mode. */
+	const recovering = async (script: (s: Setup) => void) => {
+		const s = await setup();
+		await s.pending.add([item('a')]);
+		await s.pending.markPutting(['a']);
+		const pending = new PendingStore(s.pendingIO, OWN);
+		await pending.load();
+		script(s);
+		const r = await resumeGroup(['a'], { ...s.deps, pending });
+		return { s, r: r[0], kept: pending.items.find((i) => i.id === 'a') };
+	};
+
+	it.each([
+		['409 up to the limit', (s: Setup) => {
+			s.s3.on('head', absent);
+			for (let i = 0; i < 3; i++) s.s3.on('put', () => Promise.reject(sdkError(409, 'ConditionalRequestConflict')));
+		}],
+		['digest twice', (s: Setup) => {
+			s.s3.on('head', absent);
+			for (let i = 0; i < 2; i++) s.s3.on('put', () => Promise.reject(sdkError(400, 'BadDigest')));
+		}],
+		['Put forbidden', (s: Setup) => {
+			s.s3.on('head', absent).on('put', () => Promise.reject(sdkError(403, 'AccessDenied')));
+		}],
+		['412, then the Head is forbidden', (s: Setup) => {
+			s.s3.on('head', absent).on('put', () => Promise.reject(sdkError(412, 'PreconditionFailed'))).on('head', () => Promise.reject(sdkError(403, 'Forbidden')));
+		}],
+	] as const)('recover mode, %s: unresolved, the record kept', async (_, script) => {
+		const { r, kept } = await recovering(script);
+		expect(r?.outcome).toBe('unresolved');
+		expect(kept?.state).toBe('unresolved');
+	});
+
+	it('recover mode, the Head is unknown: the record stays indeterminate', async () => {
+		const { r, kept } = await recovering((s) => void s.s3.on('head', timeout));
+		expect(r?.outcome).toBe('indeterminate');
+		expect(kept).toMatchObject({ state: 'indeterminate', uncertain: true });
+	});
+
+	it('recover mode, the Put is unknown: the record stays indeterminate', async () => {
+		const { r, kept } = await recovering((s) => void s.s3.on('head', absent).on('put', timeout));
+		expect(r?.outcome).toBe('indeterminate');
+		expect(kept).toMatchObject({ state: 'indeterminate', uncertain: true });
+	});
+
+	it('recover mode, aborted before the Head: stopped, uncertain unchanged', async () => {
+		const { r, kept } = await recovering((s) => s.abort.abort());
+		expect(r).toMatchObject({ outcome: 'stopped', reason: 'aborted' });
+		expect(kept).toMatchObject({ state: 'stopped', uncertain: true });
+	});
+
+	it('send mode, the Head of a new key is unknown: failed:head, the record removed', async () => {
+		const s = await setup();
+		s.s3.on('head', timeout);
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'failed', reason: 'head' }]);
+		expect(s.pending.items).toEqual([]);
+	});
+
+	it('send mode, the candidate key cannot be checked (timeout): stopped:candidate-unverified, never a Put', async () => {
+		const s = await setup();
+		s.s3.on('head', timeout);
+		const r = await sendGroup([item('a', { key: 'k/old.png', phase: 'candidate', preparedKey: 'k/a.png' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'stopped', reason: 'candidate-unverified' }]);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', reason: 'candidate-unverified' });
+		expect(s.s3.ops()).toEqual(['head:k/old.png']);
+	});
+
+	it('send mode, the candidate key holds other content: the prepared key is used', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/old.png', checksumOf('0'.repeat(64)));
+		const r = await sendGroup([item('a', { key: 'k/old.png', phase: 'candidate', preparedKey: 'k/a.png' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
+		expect(s.s3.ops()).toEqual(['head:k/old.png', 'head:k/a.png', 'put:k/a.png']);
+	});
+
+	it('6-4: data.json becomes unreadable during the wait after 409: the next Put is not sent', async () => {
+		const s = await setup();
+		s.s3.on('put', () => Promise.reject(sdkError(409, 'ConditionalRequestConflict')));
+		const deps: UploaderDeps = {
+			...s.deps,
+			check: () => (s.settings.readOnly ? 'read-only' : undefined),
+			sleep: () => {
+				s.storeIO.disk = undefined;
+				return s.settings.reload().then(() => undefined);
+			},
+		};
+		const [r] = await sendGroup([item('a')], BODY, deps);
+		expect(r).toMatchObject({ outcome: 'stopped', reason: 'read-only' });
+		expect(s.s3.ops().filter((o) => o.startsWith('put:'))).toHaveLength(1);
+	});
+});
+
+describe('Step 4: I1 for hashes that are already recorded', () => {
+	it('a save that would fail is not needed: the item stays in the group and is checked by Head', async () => {
+		const s = await setup();
+		expect((await sendGroup([item('a')], BODY, s.deps))[0]).toMatchObject({ outcome: 'delivered' });
+		s.storeIO.failSave = true;
+		s.s3.calls.length = 0;
+		const [r] = await sendGroup([item('b', { sourcePath: 'assets/b.png' })], BODY, s.deps);
+		expect(r?.outcome).not.toBe('excluded');
+		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+	});
+});
