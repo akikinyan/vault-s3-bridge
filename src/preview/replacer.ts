@@ -49,6 +49,8 @@ export class ImageReplacer {
 		if (this.ownSrc.has(img) && this.ownSrc.get(img) === src) return; // our own change
 		if (this.ownSrc.has(img)) this.release(img); // changed by someone else
 		if (src?.startsWith(REFERENCE_SCHEME)) this.start(img, src);
+		// Released while detached and attached again (CodeMirror reuses line DOM): load it again.
+		else if (src === null && img.dataset.s3BridgeRef && !this.leases.has(img)) this.start(img, img.dataset.s3BridgeRef);
 	}
 
 	private start(img: HTMLImageElement, src: string): void {
@@ -85,8 +87,12 @@ export class ImageReplacer {
 		);
 	}
 
-	/** Releases the image's lease and undoes everything the replacer added. */
+	/**
+	 * Releases the image's lease and undoes everything the replacer added. An image that still shows our state
+	 * (no src, or our blob URL) keeps its reference without a src, so it can be loaded again if it is reattached.
+	 */
 	release(img: HTMLImageElement): void {
+		const ours = this.ownSrc.has(img) && this.ownSrc.get(img) === img.getAttribute('src');
 		this.leases.get(img)?.release();
 		this.leases.delete(img);
 		this.ownSrc.delete(img);
@@ -94,7 +100,8 @@ export class ImageReplacer {
 		this.placeholders.delete(img);
 		img.removeClass(LOADING);
 		img.removeClass(HIDDEN);
-		delete img.dataset.s3BridgeRef;
+		if (ours) img.removeAttribute('src');
+		else delete img.dataset.s3BridgeRef;
 	}
 
 	/** Releases every image in an unloaded subtree (the images themselves are not listed in removedNodes). */

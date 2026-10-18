@@ -163,6 +163,36 @@ describe('ImageReplacer', () => {
 		expect(replacer.size).toBe(1);
 	});
 
+	it('an image released while detached is loaded again when it is attached in a later batch (still loading)', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		img.remove();
+		replacer.releaseDetached([img]); // CodeMirror took the line out of the viewport
+		expect(leases[0]!.released).toBe(true);
+		root.appendChild(img); // ...and put the same DOM back later
+		replacer.processTree(img);
+		expect(leases).toHaveLength(2);
+		expect(leases[1]!.src).toBe('s3-bridge://work/a.png');
+		leases[1]!.resolve({ url: 'blob:2', width: 1, height: 1 });
+		await flush();
+		expect(img.getAttribute('src')).toBe('blob:2');
+	});
+
+	it('an image released while detached is loaded again when it is attached in a later batch (already shown)', async () => {
+		const { replacer, leases, root, img } = setup();
+		replacer.processTree(root);
+		leases[0]!.resolve({ url: 'blob:1', width: 1, height: 1 });
+		await flush();
+		img.remove();
+		replacer.releaseDetached([img]); // the blob URL may be revoked now
+		root.appendChild(img);
+		replacer.processTree(img);
+		expect(leases).toHaveLength(2);
+		leases[1]!.resolve({ url: 'blob:2', width: 1, height: 1 });
+		await flush();
+		expect(img.getAttribute('src')).toBe('blob:2');
+	});
+
 	it('releases images that stay detached after the batch', () => {
 		const { replacer, leases, root, img } = setup();
 		replacer.processTree(root);
