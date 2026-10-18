@@ -1,23 +1,16 @@
 // What the upload job needs from Obsidian (design 8-1, 8-4, 9-2, 10-2, 4-3) and from AWS, built for one note.
 // Kept apart from job.ts so the job itself runs without Obsidian.
-import type { S3Client } from '@aws-sdk/client-s3';
-import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import type { NodeHttpHandler } from '@smithy/node-http-handler';
 import { type App, type EventRef, MarkdownView, type TFile } from 'obsidian';
-import { resolveSsoCredentials } from '../aws/credentials';
-import { createRequestHandler } from '../aws/network';
-import { loadSharedConfig } from '../aws/profiles';
-import { SharedCredentials } from '../preview/credentials';
 import { profileOf } from '../settings/device';
 import type { SettingsStore } from '../settings/store';
-import { CONNECT_TIMEOUT_MS, type StorageConnection } from '../settings/types';
+import type { StorageConnection } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
 import type { DecodedImage, Encoder } from './convert';
 import { type CacheView, type DetectSource, type Detection, detectEmbeds } from './detect';
 import { type CommandDeps, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
 import type { PendingStore } from './pending';
+import { jobClients } from './clients';
 import type { EditorLike, NoteAccess } from './rewrite';
-import { uploadClient } from './s3';
 
 const toLf = (s: string) => s.replace(/\r\n/g, '\n');
 
@@ -154,44 +147,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-/**
- * The job's own network stack: a handler that lives until the job ends (the preview's handler is rebuilt when
- * network settings change, which would cut a Put in flight) and credentials through the same gate as previews.
- */
-export function jobClients(store: Pick<SettingsStore, 'current' | 'device'>, connectionId: string): { client(signal: AbortSignal): Promise<S3Client>; destroy(): void } {
-	const network = store.current.network;
-	const handler: NodeHttpHandler = createRequestHandler({
-		proxyUrl: network.proxyUrl,
-		noProxy: network.noProxy,
-		connectionTimeoutMs: CONNECT_TIMEOUT_MS,
-		requestTimeoutMs: network.timeoutMs,
-	});
-	const credentials = new SharedCredentials(
-		{
-			loadConfig: loadSharedConfig,
-			resolve: resolveSsoCredentials,
-			callerArn: async (creds, region, h, signal) =>
-				(await new STSClient({ region, credentials: creds, requestHandler: h }).send(new GetCallerIdentityCommand({}), { abortSignal: signal })).Arn,
-			now: () => Date.now(),
-		},
-		handler,
-	);
-	return {
-		client: async (signal) => {
-			const c = store.current.connections.find((x) => x.id === connectionId);
-			const p = profileOf(store.device, connectionId);
-			if (!c || !p) throw new Error('no connection or profile');
-			const creds = await credentials.get(connectionId, p.generation, p.profile, c.region, signal);
-			// Static credentials: nothing is resolved inside send(), after the checkpoint (10-3).
-			return uploadClient({ region: c.region, endpoint: c.endpoint, forcePathStyle: c.forcePathStyle, credentials: creds, requestHandler: handler });
-		},
-		destroy: () => {
-			credentials.clear();
-			handler.destroy();
-		},
-	};
 }
 
 export interface UploadHost {
