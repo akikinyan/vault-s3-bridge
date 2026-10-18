@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
+import MarkdownIt from 'markdown-it';
 import { describe, expect, it } from 'vitest';
+import { parseReference } from '../src/reference/reference';
 import { validatePublicBaseUrl } from '../src/settings/validate';
 import { type EmbedSyntax, parseEmbeds, parseEmbedSyntax } from '../src/upload/detect';
 import {
@@ -146,7 +148,7 @@ describe('applyToNote (9-2)', () => {
 		{ offset: 19, length: 10, text: '![B](s3-bridge://demo/b.png)' },
 		{ offset: snapshot.indexOf('![[c'), length: '![[c.png\\|9]]'.length, text: '![C\\|9](s3-bridge://demo/c.png)' },
 	];
-	const expected = replaceRanges(snapshot, reps);
+	const expected = 'one ![A](s3-bridge://demo/a.png) two ![B](s3-bridge://demo/b.png)\r\n| x | ![C\\|9](s3-bridge://demo/c.png) |\r\n';
 	const lf = (s: string) => s.replace(/\r\n/g, '\n');
 
 	it('open note: one transaction with all changes, on the LF text, then verified', async () => {
@@ -194,6 +196,21 @@ describe('end to end on a measured note', () => {
 			reps.push({ offset: e.offset, length: e.original.length, text: buildMarkdown({ syntax: s.value, target: PRIV, key: `k/${e.offset}.png`, fileBase: 'f', inTable: e.inTable }) });
 		}
 		const next = replaceRanges(text, reps);
+		// Outside the replaced ranges nothing changes: cut both texts at the ranges and compare the pieces.
+		const sorted = [...reps].sort((a, b) => a.offset - b.offset);
+		const outside: string[] = [];
+		let from = 0;
+		for (const r of sorted) {
+			outside.push(text.slice(from, r.offset));
+			from = r.offset + r.length;
+		}
+		outside.push(text.slice(from));
+		let at = 0;
+		outside.forEach((piece, i) => {
+			expect(next.startsWith(piece, at)).toBe(true);
+			at += piece.length + (i < sorted.length ? sorted[i]!.text.length : 0);
+		});
+		expect(at).toBe(next.length);
 		expect(next).toMatch(/\| !\[f\\\|100\]\(s3-bridge:\/\/demo\/k\/\d+\.png\) \| !\[t\]\(s3-bridge:\/\/demo\/k\/\d+\.png\) \|/);
 		expect(next).toContain('%% ![[percent-comment-ignored.png]] %%');
 		// References are not embeds for the cache (measured), so only the embeds left alone remain.
@@ -201,5 +218,35 @@ describe('end to end on a measured note', () => {
 		if (!again.ok) throw new Error('unparsable');
 		expect(again.embeds).toHaveLength(found.embeds.length - reps.length);
 		expect(next.match(/\]\(s3-bridge:\/\/demo\//g)).toHaveLength(reps.length);
+	});
+});
+
+describe('generated Markdown rendered by a Markdown parser', () => {
+	const parser = new MarkdownIt();
+	const images = (markdown: string) =>
+		[...parser.render(markdown).matchAll(/<img src="([^"]*)" alt="([^"]*)"/g)].map((m) => ({ src: m[1]!.replace(/&amp;/g, '&'), alt: m[2]! }));
+	const keys = ['attachments/2026/10/0123456789abcdef.png', 'notes/日本語 フォルダ/画像 (1).png', "a(b)c/[x]/y z!'*.png"];
+
+	it.each(keys)('%s: one image whose URL or reference reads back as the key, in text and in a table', (key) => {
+		for (const [original, inTable] of [
+			['![[a.png]]', false],
+			['![[a.png|300]]', false],
+			['![図](a.png)', false],
+			['![[a.png\\|300]]', true],
+		] as const) {
+			for (const target of [PUB, PRIV]) {
+				const out = buildMarkdown({ syntax: syntax(original, inTable), target, key, fileBase: 'a', inTable });
+				const found = images(inTable ? `| x |\n|---|\n| ${out} |\n` : out);
+				expect(found, out).toHaveLength(1);
+				const src = found[0]!.src;
+				if (target === PUB) {
+					expect(src.startsWith('https://cdn.example.com/files/')).toBe(true);
+					expect(decodeURIComponent(src.slice('https://cdn.example.com/files/'.length))).toBe(key);
+					expect(found[0]!.alt).not.toBe('image');
+				} else {
+					expect(parseReference(src)).toEqual({ ok: true, value: { alias: 'demo', key } });
+				}
+			}
+		}
 	});
 });

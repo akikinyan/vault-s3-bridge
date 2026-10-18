@@ -258,6 +258,13 @@ describe('detectEmbeds (8-3)', () => {
 		expect(await detectEmbeds(source([text, edited, `${edited}x`], [stale]))).toEqual({ ok: false, reason: 'changed' });
 	});
 
+	it('a line just turned into a code fence of the same length, with the cache still from before: aborted', async () => {
+		// The measured pair: embeds-v1-fenced.md is embeds-v1.md with "@@@" changed to a fence, and its cache is the new one.
+		const fenced = note('embeds-v1-fenced');
+		expect(await detectEmbeds(source([fenced], [cacheOf('embeds-v1')]))).toMatchObject({ ok: false, reason: 'mismatch' });
+		expect(await detectEmbeds(source([fenced], [cacheOf('embeds-v1-fenced')]))).toMatchObject({ ok: true });
+	});
+
 	it('a note without a cache entry yet is a mismatch unless it has no embeds', async () => {
 		expect(await detectEmbeds(source(['# empty\n'], [undefined]))).toMatchObject({ ok: true, embeds: [] });
 		expect(await detectEmbeds(source([text], [undefined]))).toMatchObject({ ok: false, reason: 'mismatch' });
