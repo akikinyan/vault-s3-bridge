@@ -1,6 +1,7 @@
 // Child process for the 7-3 kill tests in uploadKill.test.ts: a real PendingStore and SettingsStore on Node's fs,
 // and a bucket kept as files in a directory, so objects and records survive the kill.
-//   node --import tsx tests/fixtures/uploadChild.ts <dir> send <point> <one|two>   (SIGKILLs itself at <point>)
+//   node --import tsx tests/fixtures/uploadChild.ts <dir> send <point> <one|two|alt>   (SIGKILLs itself at <point>)
+// two: two source files with different prepared keys and the same bytes; alt: k/a.png already holds other content.
 //   node --import tsx tests/fixtures/uploadChild.ts <dir> resume                    (prints the outcome as JSON)
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ import { nodePendingIO, type PendingIO, PendingStore } from '../../src/upload/pe
 import { resumeGroup, sendGroup, type UploaderDeps } from '../../src/upload/uploader';
 import { newItem, OWN } from './pendingItems';
 
-const [dir, mode, point, count] = process.argv.slice(2) as [string, 'send' | 'resume', string | undefined, 'one' | 'two' | undefined];
+const [dir, mode, point, count] = process.argv.slice(2) as [string, 'send' | 'resume', string | undefined, 'one' | 'two' | 'alt' | undefined];
 const kill = (): never => {
 	process.kill(process.pid, 'SIGKILL');
 	throw new Error('unreachable');
@@ -53,6 +54,7 @@ const pendingIO: PendingIO = {
 		if (at('after-record') && writes === 1) kill();
 		const states = (JSON.parse(text) as { items: { state: string }[] }).items.map((i) => i.state);
 		if (at('before-apply') && states.length > 0 && states.every((s) => s === 'delivered')) kill();
+		if (at('after-alt') && text.includes('"altKey"')) kill();
 	},
 };
 
@@ -60,6 +62,7 @@ const pendingIO: PendingIO = {
 const bucket = join(dir, 's3');
 mkdirSync(bucket, { recursive: true });
 const objectPath = (key: string) => join(bucket, encodeURIComponent(key));
+if (mode === 'send' && count === 'alt') writeFileSync(objectPath('k/a.png'), 'other content');
 const sdkError = (status: number, name: string) => Object.assign(new Error(name), { name, $metadata: { httpStatusCode: status } });
 const client = {
 	send(command: { constructor: { name: string }; input: Record<string, unknown> }) {
@@ -100,7 +103,7 @@ const deps: UploaderDeps = {
 
 if (mode === 'send') {
 	const common = { target: 'aws:example-private', sourceSha256: SOURCE, sentSha256: SENT, key: 'k/a.png', preparedKey: 'k/a.png', groupId: 'g' };
-	const items = count === 'two' ? [newItem('a', common), newItem('b', { ...common, sourcePath: 'assets/b.png' })] : [newItem('a', common)];
+	const items = count === 'two' ? [newItem('a', common), newItem('b', { ...common, sourcePath: 'assets/b.png', sourceSha256: 'd'.repeat(64), preparedKey: 'k/b.png' })] : [newItem('a', common)];
 	await sendGroup(items, BODY, deps);
 	process.stdout.write('finished\n');
 } else {
@@ -111,7 +114,7 @@ if (mode === 'send') {
 		JSON.stringify({
 			resumed: groups,
 			results,
-			items: pending.items.map((i) => ({ id: i.id, state: i.state, uncertain: i.uncertain, occurrences: i.occurrences.length })),
+			items: pending.items.map((i) => ({ id: i.id, state: i.state, uncertain: i.uncertain, occurrences: i.occurrences.length, altKey: i.altKey })),
 			objects: readdirSync(bucket).map(decodeURIComponent),
 			history: settings.current.history.map((h) => ({ key: h.key, sourceSha256: h.sourceSha256 })),
 			privateFiles: settings.current.privateFiles,

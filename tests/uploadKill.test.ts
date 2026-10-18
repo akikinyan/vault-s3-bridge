@@ -26,7 +26,7 @@ async function states(dir: string): Promise<string[]> {
 interface Resumed {
 	resumed: string[][];
 	results: { id: string; outcome: string }[];
-	items: { id: string; state: string; uncertain: boolean; occurrences: number }[];
+	items: { id: string; state: string; uncertain: boolean; occurrences: number; altKey?: string }[];
 	objects: string[];
 	history: { key: string }[];
 	privateFiles: string[];
@@ -62,7 +62,26 @@ describe('killed during an upload, resumed by a new process (7-3)', () => {
 			);
 			// One history entry per source file, all at the same key (6-0); I1 recorded before anything was sent.
 			expect(out.history.map((h) => h.key)).toEqual(Array<string>(n).fill('k/a.png'));
-			expect(out.privateFiles.length).toBeGreaterThan(0);
+			expect(out.privateFiles).toContain('c'.repeat(64));
+			if (count === 'two') expect(out.privateFiles).toContain('d'.repeat(64));
 		}
+	}, 60_000);
+});
+
+describe('killed after the group moved to the alternate key, resumed by a new process (6-0, 7-3)', () => {
+	it.each(['after-alt', 'put-lost', 'put-arrived', 'before-history'] as const)('%s', async (point) => {
+		const dir = await mkdtemp(join(tmpdir(), 'vsb-upload-'));
+		dirs.push(dir);
+		const killed = spawn(dir, 'send', point, 'alt');
+		expect(killed.signal, killed.stderr).toBe('SIGKILL');
+		const r = spawn(dir, 'resume');
+		expect(r.status, r.stderr).toBe(0);
+		const out = JSON.parse(r.stdout) as Resumed;
+		const alt = out.items[0]?.altKey;
+		expect(alt).toMatch(/^k\/a-[0-9a-f]{8}\.png$/);
+		// The other content stays where it was; ours is at the alternate key only, once.
+		expect(out.objects.sort()).toEqual(['k/a.png', alt!].sort());
+		expect(out.items.map((i) => [i.state, i.altKey])).toEqual([['delivered', alt]]);
+		expect(out.history.map((h) => h.key)).toEqual([alt]);
 	}, 60_000);
 });
