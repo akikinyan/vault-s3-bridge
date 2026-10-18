@@ -391,6 +391,8 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		// Private: I1 cannot be saved first, so the file leaves the group before any check.
 		['data.json became unreadable (private)', priv, (w) => Promise.resolve(void (w.storeIO.disk = undefined)), 'excluded', 'private-not-saved'],
 		['data.json became unreadable (public)', pub, (w) => Promise.resolve(void (w.storeIO.disk = undefined)), 'stopped', 'read-only'],
+		['a newer settings version arrived (private)', priv, (w) => Promise.resolve(void (w.storeIO.disk = { ...(w.storeIO.disk as object), schemaVersion: 99 })), 'excluded', 'private-not-saved'],
+		['a newer settings version arrived (public)', pub, (w) => Promise.resolve(void (w.storeIO.disk = { ...(w.storeIO.disk as object), schemaVersion: 99 })), 'stopped', 'read-only'],
 	];
 	it.each(changes)('%s: no request is started', async (_, connection, change, outcome, reason) => {
 		const note = '![[a.png]]';

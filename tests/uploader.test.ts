@@ -663,3 +663,93 @@ describe('Step 4: privacy and recovery paths', () => {
 		expect(s.s3.ops()).not.toContain('put:k/a.png');
 	});
 });
+
+describe('Step 4: changes that reach data.json during a send (sync, no notification)', () => {
+	type Disk = { connections: StorageConnection[]; privateFiles: string[]; aliasBindings: unknown[] };
+	/** Rewrites data.json right before the first request, as a sync tool would. */
+	const onDisk = (s: Setup, edit: (disk: Disk) => Disk): UploaderDeps => {
+		let done = false;
+		return {
+			...s.deps,
+			sourceUnchanged: () => {
+				if (!done) {
+					done = true;
+					s.storeIO.disk = edit(structuredClone(s.storeIO.disk) as Disk);
+				}
+				return Promise.resolve(true);
+			},
+		};
+	};
+
+	it('a private record of this content arrives: the public group sends nothing', async () => {
+		const s = await setup();
+		const deps = onDisk(s, (d) => ({ ...d, privateFiles: [...d.privateFiles, SOURCE_A] }));
+		expect(await sendGroup([pubItem('x')], BODY, deps)).toEqual([{ id: 'x', outcome: 'stopped', reason: 'private-recorded' }]);
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('the public connection became private on disk only: nothing is sent', async () => {
+		const s = await setup();
+		const deps = onDisk(s, (d) => ({ ...d, connections: d.connections.map((c) => (c.id === 'c2' ? { ...c, classification: 'private' } : c)) }));
+		const [r] = await sendGroup([pubItem('x')], BODY, deps);
+		expect(r).toMatchObject({ outcome: 'stopped' });
+		expect(s.s3.calls).toEqual([]);
+		expect(s.settings.current.connections.find((c) => c.id === 'c2')?.classification).toBe('private');
+	});
+
+	it('another device bound the alias to another bucket (conflict): nothing is sent', async () => {
+		const s = await setup();
+		const deps = onDisk(s, (d) => ({ ...d, aliasBindings: [...d.aliasBindings, { alias: 'work', target: 'aws:example-other', classification: 'private' }] }));
+		const [r] = await sendGroup([item('a')], BODY, deps);
+		expect(r).toMatchObject({ outcome: 'stopped' });
+		expect(s.s3.calls).toEqual([]);
+	});
+});
+
+describe('Step 4: classification across restarts, groups and keys', () => {
+	it('after a public connection became private and Obsidian restarted, its content cannot go to another public connection', async () => {
+		const s = await setup();
+		expect((await sendGroup([pubItem('x')], BODY, s.deps))[0]).toMatchObject({ outcome: 'delivered' });
+		expect((await s.settings.mutate(saveConnectionOp(pub, { ...pub, classification: 'private' }, 'p'))).ok).toBe(true);
+		const restarted = new SettingsStore(s.storeIO);
+		await restarted.reload();
+		const other: StorageConnection = { ...pub, id: 'c4', alias: 'site', bucket: 'example-public-2' };
+		expect((await restarted.mutate(saveConnectionOp(undefined, other, 'p'))).ok).toBe(true);
+		s.s3.calls.length = 0;
+		const r = await sendGroup([item('y', { connectionId: 'c4', classification: 'public', target: 'aws:example-public-2', key: 'k/y.png', preparedKey: 'k/y.png' })], BODY, { ...s.deps, settings: restarted });
+		expect(r).toEqual([{ id: 'y', outcome: 'stopped', reason: 'private-recorded' }]);
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('a private group of two sources with the same sent bytes records both sources, two records and two history entries', async () => {
+		const s = await setup();
+		const r = await sendGroup([item('a'), item('b', { sourceSha256: SOURCE_B, sourcePath: 'assets/b.png' })], BODY, s.deps);
+		expect(r.map((x) => x.outcome)).toEqual(['delivered', 'delivered']);
+		expect(s.settings.current.privateFiles).toEqual([SOURCE_A, SOURCE_B, SENT].sort());
+		expect(s.pending.items.map((i) => i.id)).toEqual(['a', 'b']);
+		expect(s.settings.current.history.map((h) => h.sourceSha256).sort()).toEqual([SOURCE_A, SOURCE_B].sort());
+		expect(s.s3.ops().filter((o) => o.startsWith('put:'))).toHaveLength(1);
+	});
+
+	it('a collision at the alternate key too: failed, never a third key', async () => {
+		const s = await setup();
+		const alt = `k/a-${SENT.slice(0, 8)}.png`;
+		s.s3.objects.set('k/a.png', checksumOf('0'.repeat(64)));
+		s.s3.objects.set(alt, checksumOf('1'.repeat(64)));
+		const [r] = await sendGroup([item('a')], BODY, s.deps);
+		expect(r).toMatchObject({ outcome: 'failed', reason: 'collision' });
+		expect(new Set(s.s3.ops().map((o) => o.split(':')[1]))).toEqual(new Set(['k/a.png', alt]));
+	});
+
+	it('resume after the connection’s bucket was edited on disk: no Head and no Put', async () => {
+		const s = await setup();
+		await s.pending.add([item('a')]);
+		await s.pending.markPutting(['a']);
+		const disk = s.storeIO.disk as { connections: StorageConnection[] };
+		s.storeIO.disk = { ...disk, connections: disk.connections.map((c) => (c.id === 'c1' ? { ...c, bucket: 'example-moved' } : c)) };
+		await s.settings.reload();
+		const r = await resumeGroup(['a'], s.deps);
+		expect(r[0]).toMatchObject({ reason: 'target-mismatch' });
+		expect(s.s3.calls).toEqual([]);
+	});
+});
