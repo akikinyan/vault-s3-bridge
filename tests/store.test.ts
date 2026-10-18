@@ -182,6 +182,30 @@ describe('SettingsStore — read-only data.json', () => {
 		expect(r).toMatchObject({ ok: false, reason: 'save-failed' });
 		expect(store.readOnly).toBe('unreadable');
 	});
+
+	it('a failed reset keeps the private records this device holds', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		expect((await store.mutate(addPrivateFilesOp([HASH_A]))).ok).toBe(true);
+		io.disk = undefined;
+		await store.reload();
+		io.failSave = true;
+		expect((await store.mutate(resetOp(), { allowUnreadable: true })).ok).toBe(false);
+		expect(store.current.privateFiles).toEqual([HASH_A]);
+		const restarted = await storeWith(io);
+		expect(restarted.current.privateFiles).toEqual([HASH_A]);
+	});
+
+	it('a missing data.json (null) starts from the defaults and gets the records back from the device mirror', async () => {
+		const io = new FakeIO();
+		const first = await storeWith(io);
+		expect((await first.mutate(addPrivateFilesOp([HASH_A]))).ok).toBe(true);
+		io.disk = null;
+		const restarted = await storeWith(io);
+		expect(restarted.readOnly).toBeUndefined();
+		expect(restarted.current.connections).toEqual([]);
+		expect(restarted.current.privateFiles).toEqual([HASH_A]);
+	});
 });
 
 describe('SettingsStore — mutate', () => {
