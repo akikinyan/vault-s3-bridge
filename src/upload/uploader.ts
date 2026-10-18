@@ -9,7 +9,7 @@ import type { HistoryEntry, PluginSettings } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
 import { alternateKey } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
-import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_MIN_TIMEOUT_MS, putCommand, type PutOutcome } from './s3';
+import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_MIN_TIMEOUT_MS, putCommand } from './s3';
 import { afterHead, afterPut, type HeadStage, type Mode, type Next, type PutResult, resumePlan } from './transitions';
 
 export type ItemOutcome =
