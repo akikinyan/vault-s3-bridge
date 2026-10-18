@@ -137,7 +137,8 @@ export function resultLines(r: JobResult): { lines: Line[]; warn: boolean } {
 	const lines: Line[] = [];
 	if (r.aborted) lines.push({ key: ABORT_KEY[r.aborted] });
 	const linked = r.files.filter((f) => f.linked).length;
-	if (linked > 0) lines.push({ key: 'upload.result.linked', params: { n: String(linked) } });
+	// A copy leaves the note unchanged, so it is not reported as linked.
+	if (linked > 0) lines.push({ key: r.link.kind === 'copied' ? 'upload.result.uploadedForCopy' : 'upload.result.linked', params: { n: String(linked) } });
 	// Delivered without a link: the object exists, the record stays (copy from the settings).
 	const waiting = r.files.filter((f) => f.outcome === 'delivered' && !f.linked).length;
 	if (waiting > 0) lines.push({ key: 'upload.result.deliveredNotLinked', params: { n: String(waiting) } });

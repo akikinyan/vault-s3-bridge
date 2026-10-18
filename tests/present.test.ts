@@ -132,13 +132,13 @@ describe('resultLines', () => {
 
 	it('copied: says the Markdown is based on the note as prepared', () => {
 		const r: JobResult = { files: [fr('delivered', true)], link: { kind: 'copied', ok: true } };
-		expect(keys(r)).toEqual(['upload.result.linked:1', 'upload.result.copied']);
+		expect(keys(r)).toEqual(['upload.result.uploadedForCopy:1', 'upload.result.copied']);
 		expect(resultLines(r).warn).toBe(false);
 	});
 
 	it('replacing fell back to copying: the reason comes first', () => {
 		const r: JobResult = { files: [fr('delivered', true)], link: { kind: 'copied', ok: true, fallback: { applied: false, reason: 'changed' } } };
-		expect(keys(r)).toEqual(['upload.result.linked:1', 'upload.result.fallbackChanged', 'upload.result.copied']);
+		expect(keys(r)).toEqual(['upload.result.uploadedForCopy:1', 'upload.result.fallbackChanged', 'upload.result.copied']);
 	});
 
 	it('copy failed: delivered items stay recorded and the user is told where to copy them', () => {

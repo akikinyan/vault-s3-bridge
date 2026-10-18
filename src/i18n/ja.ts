@@ -216,6 +216,7 @@ export const ja: Record<MessageKey, string> = {
 	'upload.progress': '{n} 件をアップロード中…',
 	'upload.stopButton': '中断',
 	'upload.result.linked': '{n} 件をアップロードしてリンクしました。',
+	'upload.result.uploadedForCopy': '{n} 件をアップロードしました。',
 	'upload.result.deliveredNotLinked': '{n} 件はアップロードしましたが、リンクしていません。',
 	'upload.result.doneUnrecorded': '{n} 件はアップロードしましたが、履歴を保存できませんでした。',
 	'upload.result.stopped': '{n} 件を停止しました。',

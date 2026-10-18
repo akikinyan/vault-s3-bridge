@@ -214,6 +214,7 @@ export const en = {
 	'upload.progress': 'Uploading {n} file(s)…',
 	'upload.stopButton': 'Stop',
 	'upload.result.linked': '{n} file(s) uploaded and linked.',
+	'upload.result.uploadedForCopy': '{n} file(s) uploaded.',
 	'upload.result.deliveredNotLinked': '{n} file(s) uploaded but not linked.',
 	'upload.result.doneUnrecorded': '{n} file(s) uploaded, but the upload history could not be saved.',
 	'upload.result.stopped': '{n} file(s) stopped.',
