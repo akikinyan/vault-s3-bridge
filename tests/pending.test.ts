@@ -512,3 +512,23 @@ describe('PendingStore — files on disk', () => {
 		}, 30_000);
 	});
 });
+
+describe('occurrences survive a restart (Markdown is copied from the record later)', () => {
+	it('original, alt, size and the table flag are read back as written', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vsb-pending-'));
+		try {
+			const occurrences = [
+				{ original: '![[a.png\\|300]]', alt: 'a', size: '300', inTable: true },
+				{ original: '![図](a.png)', alt: '図', inTable: false },
+			];
+			const first = new PendingStore(nodePendingIO(dir), OWN);
+			expect(await first.load()).toBe('ready');
+			expect((await first.add([newItem('a', { occurrences })])).ok).toBe(true);
+			const restarted = new PendingStore(nodePendingIO(dir), OWN);
+			expect(await restarted.load()).toBe('ready');
+			expect(restarted.items[0]?.occurrences).toEqual(occurrences);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
