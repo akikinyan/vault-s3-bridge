@@ -225,6 +225,7 @@ describe('generated Markdown rendered by a Markdown parser', () => {
 	const parser = new MarkdownIt();
 	const images = (markdown: string) =>
 		[...parser.render(markdown).matchAll(/<img src="([^"]*)" alt="([^"]*)"/g)].map((m) => ({ src: m[1]!.replace(/&amp;/g, '&'), alt: m[2]! }));
+	const TARGETS: readonly Target[] = [PUB, PRIV];
 	const keys = ['attachments/2026/10/0123456789abcdef.png', 'notes/日本語 フォルダ/画像 (1).png', "a(b)c/[x]/y z!'*.png"];
 
 	it.each(keys)('%s: one image whose URL or reference reads back as the key, in text and in a table', (key) => {
@@ -234,7 +235,7 @@ describe('generated Markdown rendered by a Markdown parser', () => {
 			['![図](a.png)', false],
 			['![[a.png\\|300]]', true],
 		] as const) {
-			for (const target of [PUB, PRIV]) {
+			for (const target of TARGETS) {
 				const out = buildMarkdown({ syntax: syntax(original, inTable), target, key, fileBase: 'a', inTable });
 				const found = images(inTable ? `| x |\n|---|\n| ${out} |\n` : out);
 				expect(found, out).toHaveLength(1);

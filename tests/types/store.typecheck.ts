@@ -16,6 +16,10 @@ export function settingsAreDeeplyReadOnly(): void {
 	store.current.connections[0]!.region = 'us-east-1';
 	// @ts-expect-error records are read-only
 	store.current.privateBuckets.push('aws:x');
+	// @ts-expect-error private-file records are read-only
+	store.current.privateFiles.push('a'.repeat(64));
+	// @ts-expect-error history entries are read-only
+	store.current.history[0]!.key = 'k/other.png';
 	// @ts-expect-error device state is read-only
 	store.device.profiles.c1 = { profile: 'p', generation: 1 };
 }

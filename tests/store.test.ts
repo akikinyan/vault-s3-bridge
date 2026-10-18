@@ -91,6 +91,18 @@ describe('SettingsStore — reading', () => {
 		}).toThrow(TypeError);
 		expect(() => (store.current.connections as StorageConnection[]).push(priv)).toThrow(TypeError);
 	});
+
+	it('freezes connections and the grow-only records too', async () => {
+		const store = await storeWith(new FakeIO());
+		expect((await store.mutate(saveConnectionOp(undefined, priv, 'p'))).ok).toBe(true);
+		expect((await store.mutate(addPrivateFilesOp([HASH_A]))).ok).toBe(true);
+		const c = store.current.connections[0] as { region: string };
+		expect(() => {
+			c.region = 'us-east-1';
+		}).toThrow(TypeError);
+		expect(() => (store.current.privateFiles as string[]).push(HASH_B)).toThrow(TypeError);
+		expect(() => (store.current.privateBuckets as string[]).push('aws:z')).toThrow(TypeError);
+	});
 });
 
 describe('SettingsStore — read-only data.json', () => {
