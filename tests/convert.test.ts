@@ -199,6 +199,13 @@ describe('output check (4-3 step 4): a bad output is rejected, never replaced by
 		expect(await prepareBytes(load('jpeg-gps-rot6.jpg'), policy(), enc)).toMatchObject({ ok: true });
 	});
 
+	it('a JPEG output that still carries Exif and GPS is rejected', async () => {
+		const enc = new FakeEncoder({ 'image/jpeg': load('jpeg-gps-rot1.jpg') }, [300, 200]);
+		const r = await prepareBytes(load('jpeg-gps-rot1.jpg'), policy(), enc);
+		expect(r).toMatchObject({ ok: false, reason: 'strip-failed' });
+		expect(r.ok ? '' : (r.detail ?? '')).toMatch(/^output-metadata:.*exif.*gps/);
+	});
+
 	it('a bad WebP candidate rejects the whole conversion even when the same-format output is fine', async () => {
 		const enc = new FakeEncoder({ 'image/png': PNG_OUT, 'image/webp': load('webp-meta.webp') });
 		expect(await prepareBytes(load('png-plain.png'), policy({ webp: { enabled: true, quality: 0.85 } }), enc)).toEqual({

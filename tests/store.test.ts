@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEVICE_STORAGE_KEY } from '../src/settings/device';
-import { deleteConnectionOp, resetOp, saveConnectionOp, setFieldOp } from '../src/settings/ops';
+import { addPrivateFilesOp, deleteConnectionOp, resetOp, saveConnectionOp, setFieldOp } from '../src/settings/ops';
 import { SettingsStore, type StoreChange, type StoreIO } from '../src/settings/store';
 import type { StorageConnection } from '../src/settings/types';
 
 const priv: StorageConnection = { id: 'c1', alias: 'work', provider: 'aws-s3', classification: 'private', bucket: 'x', region: 'ap-northeast-1', keyTemplate: 'k/{hash}.{ext}' };
+const HASH_A = 'a'.repeat(64);
+const HASH_B = 'b'.repeat(64);
 const pub: StorageConnection = { id: 'c2', alias: 'blog', provider: 'aws-s3', classification: 'public', bucket: 'p', region: 'ap-northeast-1', keyTemplate: 'k/{hash}.{ext}' };
 
 /** In-memory data.json and localStorage. `disk === undefined` means unreadable, `null` means missing. */
@@ -257,6 +259,38 @@ describe('SettingsStore — mutate', () => {
 		expect((await saving).ok).toBe(true);
 		expect(store.current.connections.map((c) => c.id)).toEqual(['c1']);
 		expect(store.current.privateBuckets).toEqual(['aws:x']);
+	});
+
+	it('a slow read that finishes after a private-file record is saved does not lose the record', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const stale = structuredClone(io.disk);
+		io.loadImpl = async () => {
+			await gate;
+			return structuredClone(stale);
+		};
+		const reloading = store.reload();
+		const saving = store.mutate(addPrivateFilesOp([HASH_A]));
+		io.loadImpl = undefined;
+		release();
+		await reloading;
+		expect((await saving).ok).toBe(true);
+		await store.reload();
+		expect(store.current.privateFiles).toEqual([HASH_A]);
+		expect((io.disk as { privateFiles: string[] }).privateFiles).toEqual([HASH_A]);
+	});
+
+	it('private-file records added on two devices both survive, and one removed by a sync comes back', async () => {
+		const io = new FakeIO();
+		const store = await storeWith(io);
+		expect((await store.mutate(addPrivateFilesOp([HASH_A]))).ok).toBe(true);
+		// The other device's data.json arrives through sync: it has its own record and not ours.
+		io.disk = { ...(io.disk as object), privateFiles: [HASH_B] };
+		await store.reload();
+		expect(store.current.privateFiles).toEqual([HASH_A, HASH_B]);
+		expect((io.disk as { privateFiles: string[] }).privateFiles).toEqual([HASH_A, HASH_B]);
 	});
 });
 
