@@ -15,7 +15,8 @@
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"smoke:aws": "tsx scripts/smoke-aws.ts",
 		"check:local-values": "node scripts/check-local-values.mjs",
-		"smoke:preview": "tsx scripts/smoke-preview.ts"
+		"smoke:preview": "tsx scripts/smoke-preview.ts",
+		"smoke:upload": "tsx scripts/smoke-upload.ts"
 	},
 	"keywords": [
 		"obsidian",

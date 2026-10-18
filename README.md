@@ -195,6 +195,7 @@ Maintainers can run local-only checks against a real AWS account (never in CI):
 ```bash
 npm run smoke:aws              # connection diagnostics using local/dev.json
 npm run smoke:preview          # fetch test images through the preview service
+npm run smoke:upload           # conditional writes and checksums against a real bucket, then cleanup
 npm run check:local-values     # make sure no real environment values are tracked
 ```
 
