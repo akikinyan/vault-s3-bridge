@@ -753,3 +753,18 @@ describe('Step 4: classification across restarts, groups and keys', () => {
 		expect(s.s3.calls).toEqual([]);
 	});
 });
+
+describe('Step 4: the reason of a refused Put', () => {
+	it('404 on a Put means the bucket is missing: failed:not-found, nothing left', async () => {
+		const s = await setup();
+		s.s3.on('put', () => Promise.reject(sdkError(404, 'NoSuchBucket')));
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'failed', reason: 'not-found' }]);
+		expect(s.pending.items).toEqual([]);
+	});
+
+	it('another 4xx stays failed:failed', async () => {
+		const s = await setup();
+		s.s3.on('put', () => Promise.reject(sdkError(400, 'InvalidRequest')));
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'failed', reason: 'failed' }]);
+	});
+});

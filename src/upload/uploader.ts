@@ -70,6 +70,8 @@ class Group {
 	private bytes: Uint8Array | undefined;
 	private mode: Mode;
 	private recovered = false;
+	/** The last Put was refused with 404: the bucket does not exist. */
+	private putNotFound = false;
 	/** Bucket of the connection that passed the last checkpoint; the request is built with it. */
 	private bucket = '';
 	/** sourceSha256 of every item the group started with, excluded ones included (I2 covers them all, 6-0). */
@@ -222,8 +224,9 @@ class Group {
 			await started.response;
 			return { result: 'ok' };
 		} catch (error) {
-			const outcome: PutOutcome = classifyS3Outcome('put', error, this.deps.signal.aborted).outcome;
-			return { result: outcome };
+			const c = classifyS3Outcome('put', error, this.deps.signal.aborted);
+			this.putNotFound = c.outcome === 'failed' && c.httpStatus === 404;
+			return { result: c.outcome };
 		}
 	}
 
@@ -308,7 +311,7 @@ class Group {
 				case 'stop':
 					return this.stop(next.reason);
 				case 'fail':
-					return this.fail(next.reason);
+					return this.fail(next.reason === 'failed' && this.putNotFound ? 'not-found' : next.reason);
 				case 'unresolved':
 					return this.unresolved(next.reason);
 				case 'indeterminate': {

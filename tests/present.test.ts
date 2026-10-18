@@ -141,6 +141,23 @@ describe('resultLines', () => {
 		expect(keys(r)).toEqual(['upload.result.uploadedForCopy:1', 'upload.result.fallbackChanged', 'upload.result.copied']);
 	});
 
+	it('says why files did not go through, per outcome, and keeps unknown reasons out', () => {
+		const why = (outcome: FileResult['outcome'], reason?: string): FileResult => ({ ...fr(outcome), ...(reason ? { reason } : {}) });
+		const r: JobResult = {
+			files: [why('failed', 'not-found'), why('failed', 'not-found'), why('failed', 'forbidden'), why('not-started', 'credentials'), why('unresolved', 'some-new-reason')],
+			link: { kind: 'none' },
+		};
+		expect(keys(r)).toEqual([
+			'upload.result.failed:3',
+			'upload.reason.not-found:2',
+			'upload.reason.forbidden:1',
+			'upload.result.notStarted:1',
+			'upload.reason.credentials:1',
+			'upload.result.unresolved:1',
+			'upload.result.recordsLeft',
+		]);
+	});
+
 	it('copy failed: delivered items stay recorded and the user is told where to copy them', () => {
 		const r: JobResult = { files: [fr('delivered')], link: { kind: 'copied', ok: false } };
 		expect(keys(r)).toEqual(['upload.result.deliveredNotLinked:1', 'upload.result.copyFailed', 'upload.result.recordsLeft']);

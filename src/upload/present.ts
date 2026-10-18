@@ -120,6 +120,29 @@ const OUTCOME_KEY: Record<Exclude<FileOutcome, 'delivered'>, MessageKey> = {
 	'not-started': 'upload.result.notStarted',
 };
 
+/** 2-10: the classification of why files did not go through; unknown reasons are not shown. */
+const REASON_KEY: Record<string, MessageKey> = {
+	'forbidden': 'upload.reason.forbidden',
+	'not-found': 'upload.reason.not-found',
+	'conflict': 'upload.reason.conflict',
+	'digest': 'upload.reason.digest',
+	'collision': 'upload.reason.collision',
+	'different-object': 'upload.reason.different-object',
+	'head': 'upload.reason.head',
+	'failed': 'upload.reason.failed',
+	'permission': 'upload.reason.permission',
+	'candidate-unverified': 'upload.reason.candidate-unverified',
+	'credentials': 'upload.reason.credentials',
+	'changed': 'upload.reason.changed',
+	'private-recorded': 'upload.reason.private-recorded',
+	'private-not-saved': 'upload.reason.private-not-saved',
+	'connection-changed': 'upload.reason.connection-changed',
+	'read-only': 'upload.reason.read-only',
+	'record-failed': 'upload.reason.record-failed',
+	'cannot-rebuild': 'upload.reason.cannot-rebuild',
+	'markdown-check': 'upload.reason.markdown-check',
+};
+
 const ABORT_KEY: Record<NonNullable<JobResult['aborted']>, MessageKey> = {
 	stop: 'upload.result.abortedStop',
 	'connection-changed': 'upload.result.abortedConnection',
@@ -144,7 +167,15 @@ export function resultLines(r: JobResult): { lines: Line[]; warn: boolean } {
 	if (waiting > 0) lines.push({ key: 'upload.result.deliveredNotLinked', params: { n: String(waiting) } });
 	const counts = new Map<FileOutcome, number>();
 	for (const f of r.files) if (f.outcome !== 'delivered') counts.set(f.outcome, (counts.get(f.outcome) ?? 0) + 1);
-	for (const [outcome, n] of counts) lines.push({ key: OUTCOME_KEY[outcome as Exclude<FileOutcome, 'delivered'>], params: { n: String(n) } });
+	for (const [outcome, n] of counts) {
+		lines.push({ key: OUTCOME_KEY[outcome as Exclude<FileOutcome, 'delivered'>], params: { n: String(n) } });
+		const reasons = new Map<MessageKey, number>();
+		for (const f of r.files) {
+			const key = f.outcome === outcome && f.reason !== undefined ? REASON_KEY[f.reason] : undefined;
+			if (key) reasons.set(key, (reasons.get(key) ?? 0) + 1);
+		}
+		for (const [key, m] of reasons) lines.push({ key, params: { n: String(m) } });
+	}
 
 	const link = r.link;
 	if (link.kind === 'applied' && link.apply.applied && !link.apply.verified) lines.push({ key: 'upload.result.unverified' });
