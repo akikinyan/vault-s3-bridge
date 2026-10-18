@@ -120,17 +120,21 @@ export interface NoteAccess {
 
 export type ApplyResult =
 	| { applied: true; via: 'editor' | 'file'; verified: boolean }
-	| { applied: false; reason: 'closed' | 'deleted' | 'changed' };
+	| { applied: false; reason: 'closed' | 'deleted' | 'changed' }
+	/** `allowed` said no at the moment of writing. */
+	| { applied: false; reason: 'blocked' };
 
 /**
  * 9-2: one editor transaction (in the same synchronous step as the check) when the note is open, otherwise
  * vault.process that writes only over the exact snapshot. If neither applies, nothing is replaced at all.
+ * `allowed` is asked in that same synchronous step, so a condition that changed while waiting is seen.
  */
-export async function applyToNote(note: NoteAccess, snapshot: string, replacements: readonly Replacement[]): Promise<ApplyResult> {
+export async function applyToNote(note: NoteAccess, snapshot: string, replacements: readonly Replacement[], allowed: () => boolean = () => true): Promise<ApplyResult> {
 	const next = replaceRanges(snapshot, replacements);
 	const editor = note.openEditors()[0];
 	if (editor) {
 		if (editor.getValue() !== toLf(snapshot)) return { applied: false, reason: 'changed' };
+		if (!allowed()) return { applied: false, reason: 'blocked' };
 		const changes = [...replacements]
 			.sort((a, b) => a.offset - b.offset)
 			.map((r) => ({
@@ -144,10 +148,13 @@ export async function applyToNote(note: NoteAccess, snapshot: string, replacemen
 	if (note.wasOpenAtStart) return { applied: false, reason: 'closed' };
 	if (!note.exists()) return { applied: false, reason: 'deleted' };
 	let matched = false;
+	let blocked = false;
 	await note.process((data) => {
 		matched = data === snapshot;
-		return matched ? next : data;
+		blocked = matched && !allowed();
+		return matched && !blocked ? next : data;
 	});
 	if (!matched) return { applied: false, reason: 'changed' };
+	if (blocked) return { applied: false, reason: 'blocked' };
 	return { applied: true, via: 'file', verified: (await note.read()) === next };
 }

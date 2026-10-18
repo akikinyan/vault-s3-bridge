@@ -94,6 +94,7 @@ const deps: UploaderDeps = {
 	timeoutMs: 15_000,
 	check: () => undefined,
 	sourceUnchanged: () => Promise.resolve(true),
+	sourceChanged: () => false,
 	rebuild: () => Promise.resolve(BODY),
 	sleep: () => Promise.resolve(),
 	random: () => 0.5,

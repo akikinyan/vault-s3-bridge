@@ -60,6 +60,7 @@ async function setup(connections: StorageConnection[] = [priv, pub]): Promise<Se
 			return refuse.reason && checks > (refuse.after ?? 0) ? refuse.reason : undefined;
 		},
 		sourceUnchanged: (item) => Promise.resolve(!changed.has(item.id)),
+		sourceChanged: (item) => changed.has(item.id),
 		rebuild: () => Promise.resolve(BODY),
 		sleep: (ms, signal) => {
 			sleeps.push(ms);
@@ -363,6 +364,67 @@ describe('sendGroup — the last check before each request (10-3)', () => {
 		const deps = before(s, () => Promise.resolve(s.abort.abort()));
 		expect(await sendGroup([item('a')], BODY, deps)).toEqual([{ id: 'a', outcome: 'stopped', reason: 'aborted' }]);
 		expect(s.s3.calls).toEqual([]);
+	});
+});
+
+describe('sendGroup — a source change reported right before the Put (10-2)', () => {
+	/** Flags `id` as changed once putting has been saved: after every async source check of the group. */
+	const changeWhilePutting = (s: Setup, id: string) => {
+		const markPutting = s.pending.markPutting.bind(s.pending);
+		s.pending.markPutting = async (ids) => {
+			const r = await markPutting(ids);
+			s.changed.add(id);
+			return r;
+		};
+	};
+
+	it('one file: no Put; ends as a refused Put (not uncertain), so the record goes', async () => {
+		const s = await setup();
+		changeWhilePutting(s, 'a');
+		expect(await sendGroup([item('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'excluded', reason: 'changed' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(s, 'a')).toBeUndefined();
+	});
+
+	it('two files: the changed one leaves the group, the other is sent', async () => {
+		const s = await setup();
+		changeWhilePutting(s, 'a');
+		const r = await sendGroup([item('a'), item('b', { sourceSha256: SOURCE_B })], BODY, s.deps);
+		expect(r).toEqual([
+			{ id: 'a', outcome: 'excluded', reason: 'changed' },
+			{ id: 'b', outcome: 'delivered', key: 'k/a.png' },
+		]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+		expect(stateOf(s, 'a')).toBeUndefined();
+		expect(stateOf(s, 'b')).toMatchObject({ state: 'delivered' });
+	});
+
+	it('a change of one file reported while another file of the group is checked', async () => {
+		const s = await setup();
+		const deps: UploaderDeps = {
+			...s.deps,
+			sourceUnchanged: (i) => {
+				// After the Head: the check of b, right before the Put, is when a's event arrives.
+				if (i.id === 'b' && s.s3.calls.length === 1) s.changed.add('a');
+				return Promise.resolve(!s.changed.has(i.id));
+			},
+		};
+		const r = await sendGroup([item('a'), item('b', { sourceSha256: SOURCE_B })], BODY, deps);
+		expect(r).toEqual([
+			{ id: 'a', outcome: 'excluded', reason: 'changed' },
+			{ id: 'b', outcome: 'delivered', key: 'k/a.png' },
+		]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png']);
+	});
+
+	it('a resumed group whose source is reported changed is not re-sent', async () => {
+		const s = await setup();
+		await s.pending.add([item('a')]);
+		changeWhilePutting(s, 'a');
+		const r = await resumeGroup(['a'], s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'excluded', reason: 'changed' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(s, 'a')).toBeUndefined();
 	});
 });
 

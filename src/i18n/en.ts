@@ -249,7 +249,7 @@ export const en = {
 	'upload.result.fallbackClosed': 'The note was closed, so links were not replaced.',
 	'upload.result.fallbackDeleted': 'The note was deleted, so links were not replaced.',
 	'upload.result.fallbackChanged': 'The note changed after preparing, so links were not replaced.',
-	'upload.result.unverified': 'Links were replaced, but the note did not read back as expected. Check it (Undo reverts the change).',
+	'upload.result.unverified': 'Links were replaced, but the note did not read back as expected. Check the note.',
 	'upload.result.copied': 'The Markdown was copied. It is based on the note as prepared.',
 	'upload.result.copyFailed': 'The Markdown could not be copied. Copy it from the plugin settings.',
 	'upload.result.recordsLeft': 'Records remain. Check them under unfinished uploads in the plugin settings.',

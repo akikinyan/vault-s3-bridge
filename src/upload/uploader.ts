@@ -52,6 +52,8 @@ export interface UploaderDeps {
 	check(settings: DeepReadonly<PluginSettings>): string | undefined;
 	/** 10-2: the source file still has the hash it had when prepared. */
 	sourceUnchanged(item: DeepReadonly<PendingItem>): Promise<boolean>;
+	/** 10-2: the vault reported a change of the source since preparing. Asked synchronously as a Put starts. */
+	sourceChanged(item: DeepReadonly<PendingItem>): boolean;
 	/** 6-5 step 2: rebuild the bytes to re-send, or undefined if the source, converter or sentSha256 differ. */
 	rebuild(items: readonly DeepReadonly<PendingItem>[]): Promise<Uint8Array | undefined>;
 	sleep(ms: number, signal: AbortSignal): Promise<void>;
@@ -59,6 +61,9 @@ export interface UploaderDeps {
 	now(): Date;
 	newId(): string;
 }
+
+/** Refusal reason inside the uploader only: a source changed right before a Put. */
+const SOURCE_CHANGED = 'source-changed';
 
 type Started<T> = { started: true; response: Promise<T> } | { started: false; reason: string };
 
@@ -138,10 +143,10 @@ class Group {
 	}
 
 	/** Starts the request inside the checkpoint, without any await between the checks and send(). */
-	private start<T>(send: () => Promise<T>): Promise<Started<T>> {
+	private start<T>(send: () => Promise<T>, more: () => string | undefined = () => undefined): Promise<Started<T>> {
 		return this.deps.settings
 			.checkpoint((settings) => {
-				const reason = this.refusal(settings);
+				const reason = this.refusal(settings) ?? more();
 				if (reason) return { started: false as const, reason };
 				try {
 					return { started: true as const, response: send() };
@@ -197,8 +202,12 @@ class Group {
 		}
 	}
 
-	/** putting is written first; a Put the checkpoint refused is recorded as never started. */
-	private async put(): Promise<{ stopped: string; settled: boolean } | { result: PutResult }> {
+	/**
+	 * putting is written first; a Put the checkpoint refused is recorded as never started. A source reported
+	 * changed while putting was written stops the Put too (10-2): the group goes back to before it, and the
+	 * loop leaves the file out.
+	 */
+	private async put(): Promise<{ stopped: string; settled: boolean } | { result: PutResult } | { changed: true }> {
 		if (!this.bytes) {
 			// Resumed group: rebuild the bytes under the conditions of 6-5 step 2.
 			this.bytes = await this.deps.rebuild(this.items());
@@ -209,12 +218,25 @@ class Group {
 		const key = this.key();
 		const ids = [...this.live];
 		if (!(await this.deps.pending.markPutting(ids)).ok) return { stopped: 'record-failed', settled: false };
-		const started = await this.start(() =>
-			this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.format), {
-				abortSignal: this.deps.signal,
-				requestTimeout: Math.max(this.deps.timeoutMs, PUT_MIN_TIMEOUT_MS),
-			}),
+		const started = await this.start(
+			() =>
+				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.format), {
+					abortSignal: this.deps.signal,
+					requestTimeout: Math.max(this.deps.timeoutMs, PUT_MIN_TIMEOUT_MS),
+				}),
+			() => (this.items().some((i) => this.deps.sourceChanged(i)) ? SOURCE_CHANGED : undefined),
 		);
+		if (!started.started && started.reason === SOURCE_CHANGED) {
+			// Nothing was handed to the SDK. The changed files end as a refused Put does (not uncertain) and leave
+			// the group; the others go back to before putting and are sent by the next round.
+			const changed = this.items().filter((i) => this.deps.sourceChanged(i)).map((i) => i.id);
+			const rest = ids.filter((id) => !changed.includes(id));
+			if (!(await this.deps.pending.markPutNotStarted(changed, 'changed')).ok) return { stopped: 'record-failed', settled: false };
+			await this.deps.pending.removeFailed(changed);
+			this.settle(changed, 'excluded', 'changed');
+			if (rest.length > 0 && !(await this.deps.pending.markPutRejected(rest)).ok) return { stopped: 'record-failed', settled: false };
+			return { changed: true };
+		}
 		if (!started.started) {
 			await this.deps.pending.markPutNotStarted(ids, started.reason);
 			this.settle(ids, 'stopped', started.reason);
@@ -242,6 +264,7 @@ class Group {
 				await this.dropChanged();
 				if (this.live.length === 0) return;
 				const r = await this.put();
+				if ('changed' in r) continue;
 				if ('stopped' in r) {
 					if (r.settled) return;
 					return r.stopped === 'cannot-rebuild' ? this.unresolved(r.stopped) : this.stop(r.stopped);

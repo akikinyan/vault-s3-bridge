@@ -12,7 +12,7 @@ import { type Encoder, type PrepareRejection, prepareBytes, rebuildBytes, sha256
 import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
-import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Replacement, type Target, verifyMarkdown } from './rewrite';
+import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Target, verifyMarkdown } from './rewrite';
 import { type ItemResult, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
 
@@ -98,9 +98,14 @@ export interface PlannedGroup {
 	format: UploadFormat;
 	converter: string;
 	bytes: Uint8Array;
+	/** Bytes sent: bytes.length, kept for the screen where the bytes are not held. */
+	size: number;
 	reencoded: boolean;
 	files: PlannedFile[];
 }
+
+/** Over maxJobMB: shown on the screen, sent by a later run. Its bytes are not kept (2-2: what is prepared stays within the limit). */
+export type DeferredGroup = Omit<PlannedGroup, 'bytes'>;
 
 export interface SkippedEmbed {
 	offset: number;
@@ -116,7 +121,7 @@ export interface JobPlan {
 	target: JobTarget;
 	groups: PlannedGroup[];
 	/** Over maxJobMB: left for the next run. */
-	deferred: PlannedGroup[];
+	deferred: DeferredGroup[];
 	skipped: SkippedEmbed[];
 }
 
@@ -174,7 +179,9 @@ function linkpathOf(syntax: EmbedSyntax): string | undefined {
 interface Prepared {
 	file: SourceFile;
 	sourceSha256: string;
-	bytes: Uint8Array;
+	/** Undefined once the file is over maxJobMB: only what the screen shows is kept. */
+	bytes: Uint8Array | undefined;
+	size: number;
 	sentSha256: string;
 	format: UploadFormat;
 	converter: string;
@@ -197,6 +204,10 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 	const skipped: SkippedEmbed[] = [];
 	const byPath = new Map<string, Prepared | { skip: SkipReason; detail?: string }>();
 	const order: Prepared[] = [];
+	/** Bytes kept per sentSha256; undefined for bytes over the limit. */
+	const held = new Map<string, Uint8Array | undefined>();
+	let total = 0;
+	let over = false;
 	const skip = (embed: FoundEmbed, reason: SkipReason, detail?: string) =>
 		skipped.push({ offset: embed.offset, original: embed.original, reason, ...(detail === undefined ? {} : { detail }) });
 
@@ -232,14 +243,22 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 			skip(embed, r.skip, r.detail);
 			continue;
 		}
-		const p: Prepared = { ...r, occurrences: [{ embed, syntax: parsed.value }] };
+		// maxJobMB counts each sentSha256 once, in the order the files appear. Equal bytes share the first copy;
+		// once the limit is exceeded, new bytes are dropped right away and the rest waits for the next run.
+		let bytes: Uint8Array | undefined = held.get(r.sentSha256);
+		if (!bytes && !held.has(r.sentSha256) && !over && total + r.bytes.length <= upload.maxJobMB * MB) {
+			total += r.bytes.length;
+			bytes = r.bytes;
+		} else if (!bytes) over = true;
+		held.set(r.sentSha256, bytes);
+		const p: Prepared = { ...r, bytes, size: r.bytes.length, occurrences: [{ embed, syntax: parsed.value }] };
 		byPath.set(file.path, p);
 		order.push(p);
 	}
 
 	// 6-0: one group per sentSha256, in the order the files first appear in the note.
 	const rt = rewriteTarget(target);
-	const groups: PlannedGroup[] = [];
+	const groups: (DeferredGroup & { bytes: Uint8Array | undefined })[] = [];
 	for (const p of order) {
 		let g = groups.find((x) => x.sentSha256 === p.sentSha256);
 		if (!g) {
@@ -253,6 +272,7 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 				format: p.format,
 				converter: p.converter,
 				bytes: p.bytes,
+				size: p.size,
 				reencoded: p.reencoded,
 				files: [],
 			};
@@ -272,15 +292,11 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 		g.files.push({ itemId: deps.newId(), sourcePath: p.file.path, basename: p.file.basename, sourceSha256: p.sourceSha256, sourceSize: p.file.size, occurrences });
 	}
 
-	// maxJobMB counts each group once; once it is exceeded, the rest waits for the next run.
 	const sending: PlannedGroup[] = [];
-	const deferred: PlannedGroup[] = [];
-	let total = 0;
-	for (const g of groups.filter((x) => x.files.length > 0)) {
-		if (deferred.length === 0 && total + g.bytes.length <= upload.maxJobMB * MB) {
-			total += g.bytes.length;
-			sending.push(g);
-		} else deferred.push(g);
+	const deferred: DeferredGroup[] = [];
+	for (const { bytes, ...g } of groups.filter((x) => x.files.length > 0)) {
+		if (bytes) sending.push({ ...g, bytes });
+		else deferred.push(g);
 	}
 	skipped.sort((a, b) => a.offset - b.offset);
 	return { ok: true, plan: { jobId: deps.newId(), notePath: input.notePath, snapshot: input.snapshot, target, groups: sending, deferred, skipped } };
@@ -293,7 +309,7 @@ async function prepareFile(
 	privateFiles: ReadonlySet<string>,
 	date: Date,
 	encoder: Encoder,
-): Promise<Omit<Prepared, 'occurrences'> | { skip: SkipReason; detail?: string }> {
+): Promise<Omit<Prepared, 'occurrences' | 'bytes' | 'size'> & { bytes: Uint8Array } | { skip: SkipReason; detail?: string }> {
 	const upload = input.settings.upload;
 	// The size is known without reading: a large file is not read whole.
 	if (file.size > upload.maxFileMB * MB) return { skip: 'too-large' };
@@ -382,7 +398,10 @@ export interface FileResult {
 	linked: boolean;
 }
 
-export type LinkResult = { kind: 'none' } | { kind: 'applied'; apply: ApplyResult } | { kind: 'copied'; ok: boolean; fallback?: ApplyResult };
+/** Why the note was not replaced, so the Markdown was copied instead. */
+export type NoteFallback = Extract<ApplyResult, { reason: 'closed' | 'deleted' | 'changed' }>;
+
+export type LinkResult = { kind: 'none' } | { kind: 'applied'; apply: ApplyResult } | { kind: 'copied'; ok: boolean; fallback?: NoteFallback };
 
 export interface JobResult {
 	files: FileResult[];
@@ -415,7 +434,7 @@ function newItems(plan: JobPlan, group: PlannedGroup, apply: 'replace' | 'copy')
 		sourcePath: f.sourcePath,
 		sourceSha256: f.sourceSha256,
 		sentSha256: group.sentSha256,
-		size: group.bytes.length,
+		size: group.size,
 		format: group.format,
 		converter: group.converter,
 		key: group.key,
@@ -506,6 +525,7 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 			timeoutMs: deps.timeoutMs,
 			check: jobCheck(deps, plan.target.connectionId, confirmed),
 			sourceUnchanged: (item: DeepReadonly<PendingItem>) => sourceUnchanged(item.sourcePath, item.sourceSha256),
+			sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
 			// Within the job the prepared bytes are the recorded ones, as long as every source is unchanged.
 			rebuild: async (items) => {
 				for (const i of items) if (!(await sourceUnchanged(i.sourcePath, i.sourceSha256))) return undefined;
@@ -523,7 +543,35 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 	return results;
 }
 
-/** 10-1 step 7: replace (or copy) the links of delivered files only. */
+/** A delivered file whose links are ready to be written. */
+interface LinkEntry {
+	r: FileResult;
+	f: PlannedFile;
+	g: PlannedGroup;
+	mds: string[];
+}
+
+/** Rounds of "recheck, leave the blocked files out, try again" before the links are left for a later copy. */
+const LINK_ATTEMPTS = 5;
+
+/**
+ * Why links may not be written at this moment: the job's connection is no longer the confirmed, active one (I4;
+ * the Markdown would name a storage the user did not confirm), a public file is now recorded as private (I2), or
+ * the vault reported a change of a source (10-2). The authentication generation does not matter for a link.
+ */
+function linkBlocks(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, settings: DeepReadonly<PluginSettings>, entries: readonly LinkEntry[]) {
+	const c = settings.connections.find((x) => x.id === plan.target.connectionId);
+	const connection = !c || stableStringify(c) !== confirmed.connection || connectionState(settings, c) !== 'active';
+	const recorded = new Set(settings.privateFiles);
+	const privateRecorded = plan.target.classification === 'public' ? entries.filter((e) => recorded.has(e.f.sourceSha256) || recorded.has(e.g.sentSha256)) : [];
+	const changed = entries.filter((e) => !privateRecorded.includes(e) && deps.sourceChanged(e.f.sourcePath));
+	return { connection, privateRecorded, changed, clear: !connection && privateRecorded.length === 0 && changed.length === 0 };
+}
+
+/**
+ * 10-1 step 7: replace (or copy) the links of delivered files only. The write starts inside the last checkpoint,
+ * after every await, and the note write asks once more at the moment it writes (I2, I4, 10-2).
+ */
 async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, results: FileResult[]): Promise<LinkResult> {
 	const rt = rewriteTarget(plan.target);
 	const files = new Map(plan.groups.flatMap((g) => g.files.map((f) => [f.itemId, { f, g }] as const)));
@@ -542,26 +590,9 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 	await unlink(deps, changed, 'changed');
 	ready = ready.filter((r) => !changed.includes(r));
 
-	// I2 once more right before writing public links, reused objects included (6-3).
-	if (plan.target.classification === 'public' && ready.length > 0) {
-		const blocked = await deps.settings
-			.checkpoint((s) => {
-				const recorded = new Set(s.privateFiles);
-				return ready.filter((r) => {
-					const e = files.get(r.itemId)!;
-					return recorded.has(e.f.sourceSha256) || recorded.has(e.g.sentSha256);
-				});
-			})
-			.catch(() => ready);
-		await unlink(deps, blocked, 'private-recorded');
-		ready = ready.filter((r) => !blocked.includes(r));
-	}
-
-	const replacements: Replacement[] = [];
-	const lines: string[] = [];
-	const linked: FileResult[] = [];
+	let entries: LinkEntry[] = [];
 	for (const r of ready) {
-		const { f } = files.get(r.itemId)!;
+		const { f, g } = files.get(r.itemId)!;
 		const key = r.key!;
 		const mds = f.occurrences.map((o) => buildMarkdown({ syntax: o.syntax, target: rt, key, fileBase: f.basename, inTable: o.inTable }));
 		// 9-3: each link must read back as one image with this key; otherwise it stays delivered (copy later).
@@ -569,28 +600,59 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 			r.reason = 'markdown-check';
 			continue;
 		}
-		f.occurrences.forEach((o, i) => replacements.push({ offset: o.offset, length: o.original.length, text: mds[i]! }));
-		for (const md of mds) if (!lines.includes(md)) lines.push(md);
-		linked.push(r);
+		entries.push({ r, f, g, mds });
 	}
-	if (linked.length === 0) return { kind: 'none' };
 
+	const replacements = () => entries.flatMap((e) => e.f.occurrences.map((o, i) => ({ offset: o.offset, length: o.original.length, text: e.mds[i]! })));
+	const lines = () => [...new Set(entries.flatMap((e) => e.mds))];
 	const done = async () => {
-		for (const r of linked) r.linked = true;
-		await deps.pending.removeCompleted(linked.map((r) => r.itemId));
+		for (const e of entries) e.r.linked = true;
+		await deps.pending.removeCompleted(entries.map((e) => e.r.itemId));
 	};
-	let fallback: ApplyResult | undefined;
-	if (confirmed.apply === 'replace') {
-		const apply = await applyToNote(deps.note, plan.snapshot, replacements);
+	let mode = confirmed.apply;
+	let fallback: NoteFallback | undefined;
+	for (let attempt = 0; attempt < LINK_ATTEMPTS && entries.length > 0; attempt++) {
+		type Step = { blocks: ReturnType<typeof linkBlocks> } | { copying: Promise<boolean> } | { applying: Promise<ApplyResult> };
+		const step = await deps.settings
+			.checkpoint((s): Step => {
+				const blocks = linkBlocks(plan, confirmed, deps, s, entries);
+				if (!blocks.clear) return { blocks };
+				if (mode === 'copy') return { copying: deps.copy(lines().join('\n')) };
+				const allowed = () => linkBlocks(plan, confirmed, deps, deps.settings.current, entries).clear;
+				return { applying: applyToNote(deps.note, plan.snapshot, replacements(), allowed) };
+			})
+			.catch(() => undefined);
+		// Settings unreadable: nothing is written; the records stay delivered for a later copy.
+		if (!step) break;
+		if ('blocks' in step) {
+			const { blocks } = step;
+			if (blocks.connection) {
+				// I4: delivered under the confirmed connection; the copy later uses the connection as it is then.
+				for (const e of entries) e.r.reason = 'connection-changed';
+				break;
+			}
+			await unlink(deps, blocks.privateRecorded.map((e) => e.r), 'private-recorded');
+			await unlink(deps, blocks.changed.map((e) => e.r), 'changed');
+			entries = entries.filter((e) => !blocks.privateRecorded.includes(e) && !blocks.changed.includes(e));
+			continue;
+		}
+		if ('copying' in step) {
+			const ok = await step.copying;
+			if (ok) await done();
+			return { kind: 'copied', ok, ...(fallback ? { fallback } : {}) };
+		}
+		const apply = await step.applying;
 		if (apply.applied) {
-			await done();
+			// 7-2: the record goes only once the replacement was read back; otherwise it stays for a copy.
+			if (apply.verified) await done();
 			return { kind: 'applied', apply };
 		}
-		fallback = apply;
+		if (apply.reason !== 'blocked') {
+			fallback = { applied: false, reason: apply.reason };
+			mode = 'copy';
+		}
 	}
-	const ok = await deps.copy(lines.join('\n'));
-	if (ok) await done();
-	return { kind: 'copied', ok, ...(fallback ? { fallback } : {}) };
+	return { kind: 'none' };
 }
 
 /** Delivered, but no link may be made: the object exists, so the record stays as unresolved. */
@@ -776,6 +838,7 @@ export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed,
 				timeoutMs: deps.timeoutMs,
 				check: jobCheck(deps, id, confirmed),
 				sourceUnchanged: async (item) => (await sourceBytes(item.sourcePath, item.sourceSha256)) !== undefined,
+				sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
 				rebuild: async (items) => {
 					let out: Uint8Array | undefined;
 					for (const item of items) {
@@ -853,39 +916,56 @@ export async function copyDelivered(deps: CopyDeps, notePath: string): Promise<C
 		if (deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
 		const delivered = deps.pending.items.filter((i) => i.state === 'delivered' && i.notePath === notePath);
 		if (delivered.length === 0) return { stop: 'nothing' };
-		const skipped: Extract<CopyResult, { copied: number }>['skipped'] = [];
-		const lines: string[] = [];
-		const ready: DeepReadonly<PendingItem>[] = [];
-		const blocked = await deps.settings
-			.checkpoint((s) => {
-				const recorded = new Set(s.privateFiles);
-				return new Set(delivered.filter((i) => i.classification === 'public' && (recorded.has(i.sourceSha256) || recorded.has(i.sentSha256))).map((i) => i.id));
-			})
-			.catch(() => new Set(delivered.filter((i) => i.classification === 'public').map((i) => i.id)));
-		for (const item of delivered) {
-			if (blocked.has(item.id)) {
-				skipped.push({ id: item.id, reason: 'private-recorded' });
+		type Skipped = Extract<CopyResult, { copied: number }>['skipped'];
+		/** The lines and the records they stand for, with the settings of one checkpoint. */
+		const evaluate = (s: DeepReadonly<PluginSettings>, items: readonly DeepReadonly<PendingItem>[]) => {
+			const recorded = new Set(s.privateFiles);
+			const skipped: Skipped = [];
+			const lines: string[] = [];
+			const ready: DeepReadonly<PendingItem>[] = [];
+			for (const item of items) {
+				if (item.classification === 'public' && (recorded.has(item.sourceSha256) || recorded.has(item.sentSha256))) {
+					skipped.push({ id: item.id, reason: 'private-recorded' });
+					continue;
+				}
+				const c = sameStorage(s, item);
+				const mds = c && recordMarkdown(item, c);
+				if (!mds) {
+					skipped.push({ id: item.id, reason: c ? 'markdown-check' : 'target-mismatch' });
+					continue;
+				}
+				for (const md of mds) if (!lines.includes(md)) lines.push(md);
+				ready.push(item);
+			}
+			return { skipped, lines, ready };
+		};
+		const privateRecorded: Skipped = [];
+		let items = delivered;
+		for (;;) {
+			// The copy starts inside the checkpoint that found nothing more to hold back, after every await (I2).
+			const step = await deps.settings
+				.checkpoint((s) => {
+					const ev = evaluate(s, items);
+					const held = ev.skipped.filter((x) => x.reason === 'private-recorded');
+					return { ev, held, copying: held.length === 0 && ev.ready.length > 0 ? deps.copy(ev.lines.join('\n')) : undefined };
+				})
+				.catch(() => undefined);
+			// Settings unreadable: nothing is copied and no record changes.
+			if (!step) return { copied: 0, ok: false, skipped: privateRecorded };
+			const { ev, held, copying } = step;
+			if (held.length > 0) {
+				const ids = held.map((x) => x.id);
+				await deps.pending.update(ids, { state: 'unresolved', reason: 'private-recorded' });
+				privateRecorded.push(...held);
+				items = items.filter((i) => !ids.includes(i.id));
 				continue;
 			}
-			const c = sameStorage(deps.settings.current, item);
-			if (!c) {
-				skipped.push({ id: item.id, reason: 'target-mismatch' });
-				continue;
-			}
-			const mds = recordMarkdown(item, c);
-			if (!mds) {
-				skipped.push({ id: item.id, reason: 'markdown-check' });
-				continue;
-			}
-			for (const md of mds) if (!lines.includes(md)) lines.push(md);
-			ready.push(item);
+			const skipped = [...privateRecorded, ...ev.skipped];
+			if (!copying) return { copied: 0, ok: true, skipped };
+			const ok = await copying;
+			if (ok) await deps.pending.removeCompleted(ev.ready.map((i) => i.id));
+			return { copied: ok ? ev.ready.length : 0, ok, skipped };
 		}
-		const privateRecorded = skipped.filter((s) => s.reason === 'private-recorded').map((s) => s.id);
-		if (privateRecorded.length > 0) await deps.pending.update(privateRecorded, { state: 'unresolved', reason: 'private-recorded' });
-		if (ready.length === 0) return { copied: 0, ok: true, skipped };
-		const ok = await deps.copy(lines.join('\n'));
-		if (ok) await deps.pending.removeCompleted(ready.map((i) => i.id));
-		return { copied: ok ? ready.length : 0, ok, skipped };
 	} finally {
 		release();
 	}

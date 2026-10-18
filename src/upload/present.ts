@@ -3,7 +3,7 @@
 import type { MessageKey } from '../i18n';
 import type { PluginSettings } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
-import type { CommandStop, CopyResult, FileOutcome, JobPlan, JobResult, PlannedGroup, ResumeResult, ResumeStop, SkipReason } from './job';
+import type { CommandStop, CopyResult, DeferredGroup, FileOutcome, JobPlan, JobResult, ResumeResult, ResumeStop, SkipReason } from './job';
 import { identifyingVariables, type KeyVariable } from './key';
 import type { PendingItem, PendingState } from './pending';
 import type { ItemOutcome } from './uploader';
@@ -48,14 +48,14 @@ export interface PlanView {
 export function planView(plan: JobPlan, settings: Pick<DeepReadonly<PluginSettings>, 'history'>): PlanView {
 	const t = plan.target;
 	const publicHashes = new Set(settings.history.filter((h) => h.classification === 'public').flatMap((h) => [h.sourceSha256, h.sentSha256]));
-	const rows = (groups: readonly PlannedGroup[], deferred: boolean): FileRow[] =>
+	const rows = (groups: readonly DeferredGroup[], deferred: boolean): FileRow[] =>
 		groups.flatMap((g) =>
 			g.files.map((f, i) => ({
 				sourcePath: f.sourcePath,
 				status: deferred ? 'deferred' : i > 0 ? 'shared' : g.phase === 'candidate' ? 'history' : 'new',
 				key: g.key,
 				sourceSize: f.sourceSize,
-				sentSize: g.bytes.length,
+				sentSize: g.size,
 				reencoded: g.reencoded,
 				markdown: [...new Set(f.occurrences.map((o) => o.markdown))],
 				warnings:
@@ -69,7 +69,7 @@ export function planView(plan: JobPlan, settings: Pick<DeepReadonly<PluginSettin
 		identifying: t.classification === 'public' ? identifyingVariables(t.keyTemplate) : [],
 		rows: [...rows(plan.groups, false), ...rows(plan.deferred, true)],
 		skipped: plan.skipped.map((s) => ({ original: s.original, reason: s.reason, ...(s.detail === undefined ? {} : { detail: s.detail }) })),
-		sendBytes: plan.groups.reduce((n, g) => n + g.bytes.length, 0),
+		sendBytes: plan.groups.reduce((n, g) => n + g.size, 0),
 		sendable: plan.groups.length > 0,
 	};
 }
@@ -162,8 +162,10 @@ export function resultLines(r: JobResult): { lines: Line[]; warn: boolean } {
 	const linked = r.files.filter((f) => f.linked).length;
 	// A copy leaves the note unchanged, so it is not reported as linked.
 	if (linked > 0) lines.push({ key: r.link.kind === 'copied' ? 'upload.result.uploadedForCopy' : 'upload.result.linked', params: { n: String(linked) } });
-	// Delivered without a link: the object exists, the record stays (copy from the settings).
-	const waiting = r.files.filter((f) => f.outcome === 'delivered' && !f.linked).length;
+	// Delivered without a link: the object exists, the record stays (copy from the settings). A replacement that
+	// did not read back as expected was written, so it is told by its own line instead.
+	const unverified = r.link.kind === 'applied' && r.link.apply.applied && !r.link.apply.verified;
+	const waiting = unverified ? 0 : r.files.filter((f) => f.outcome === 'delivered' && !f.linked).length;
 	if (waiting > 0) lines.push({ key: 'upload.result.deliveredNotLinked', params: { n: String(waiting) } });
 	const counts = new Map<FileOutcome, number>();
 	for (const f of r.files) if (f.outcome !== 'delivered') counts.set(f.outcome, (counts.get(f.outcome) ?? 0) + 1);
@@ -178,7 +180,7 @@ export function resultLines(r: JobResult): { lines: Line[]; warn: boolean } {
 	}
 
 	const link = r.link;
-	if (link.kind === 'applied' && link.apply.applied && !link.apply.verified) lines.push({ key: 'upload.result.unverified' });
+	if (unverified) lines.push({ key: 'upload.result.unverified' });
 	if (link.kind === 'copied') {
 		if (link.fallback && !link.fallback.applied) lines.push({ key: FALLBACK_KEY[link.fallback.reason] });
 		lines.push({ key: link.ok ? 'upload.result.copied' : 'upload.result.copyFailed' });

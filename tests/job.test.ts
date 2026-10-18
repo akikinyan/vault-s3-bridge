@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { profileOf } from '../src/settings/device';
-import { addPrivateFilesOp, appendHistoryOp, deleteConnectionOp, saveConnectionOp } from '../src/settings/ops';
+import { addPrivateFilesOp, appendHistoryOp, deleteConnectionOp, resolveConflictOp, saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore } from '../src/settings/store';
 import type { HistoryEntry, StorageConnection } from '../src/settings/types';
 import type { DecodedImage, Encoder } from '../src/upload/convert';
@@ -196,6 +196,37 @@ async function plan(w: World, note: string, connection: StorageConnection = priv
 const confirm = (w: World, c: StorageConnection, apply: 'replace' | 'copy' = 'replace') =>
 	confirmedValues(w.settings.current.connections.find((x) => x.id === c.id)!, profileOf(w.settings.device, c.id)?.generation, apply);
 
+const bindAlias = (alias: string, target: string) => (d: { aliasBindings: { alias: string; target: string; classification: 'private' | 'public' }[] }) => {
+	d.aliasBindings.push({ alias, target, classification: 'private' });
+	return { ok: true as const, value: undefined };
+};
+
+/** Runs `fn` once, at the first source read after `puts` Puts went out: the rehash right before the links. */
+function atLinkPhase(w: World, puts: number, fn: () => Promise<unknown>) {
+	const read = w.run.readSource;
+	let fired = false;
+	w.run = {
+		...w.run,
+		readSource: async (path) => {
+			if (!fired && w.s3.calls.filter((c) => c.op === 'put').length === puts) {
+				fired = true;
+				await fn();
+			}
+			return read(path);
+		},
+	};
+}
+
+/** Runs `fn` after the record update that marks files as private-recorded has been saved. */
+function onPrivateRecorded(w: World, fn: () => Promise<unknown>) {
+	const update = w.pending.update.bind(w.pending);
+	w.pending.update = async (ids, patch) => {
+		const r = await update(ids, patch);
+		if (patch.reason === 'private-recorded') await fn();
+		return r;
+	};
+}
+
 describe('prepareJob (10-1 step 4, 8-4, 6-0)', () => {
 	it('writes nothing, sends nothing; groups by sentSha256 and keeps one item per source with every occurrence', async () => {
 		const note = '![[a.png]] x ![[b.png|300]] y ![[a.png|図]] z ![[a copy.png]]';
@@ -315,6 +346,36 @@ describe('prepareJob (10-1 step 4, 8-4, 6-0)', () => {
 		const q = await plan(w, '![[a.png]] ![[b.png]] ![[a.png]]');
 		expect(q.groups.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
 		expect(q.deferred.map((g) => g.files[0]!.sourcePath)).toEqual(['img/b.png']);
+	});
+});
+
+describe('prepareJob — memory within maxJobMB (2-2)', () => {
+	it('a file over the limit keeps only what the screen shows; equal bytes share one copy', async () => {
+		const w = await world();
+		await w.settings.mutate((d) => {
+			d.upload.maxJobMB = (PNG_A.length + PNG_B.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const q = await plan(w, '![[a.png]] ![[b.png]] ![[a copy.png]]');
+		expect(q.groups.map((g) => [g.files.map((f) => f.sourcePath), g.size])).toEqual([[['img/a.png', 'img/a copy.png'], PNG_A.length]]);
+		expect(q.deferred.map((g) => [g.files.map((f) => f.sourcePath), g.size, 'bytes' in g])).toEqual([[['img/b.png'], PNG_B.length, false]]);
+	});
+
+	it('everything after the first file over the limit waits, even a smaller one (the order of the note)', async () => {
+		const w = await world();
+		const c = PNG_A.slice();
+		c[c.length - 1] = c[c.length - 1]! ^ 1; // other bytes, same size
+		w.files.set('img/c.png', c);
+		await w.settings.mutate((d) => {
+			d.upload.maxJobMB = (PNG_A.length + PNG_B.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const q = await plan(w, '![[a.png]] ![[b.png]] ![[c.png]]');
+		expect(q.groups.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
+		expect(q.deferred.map((g) => [g.files[0]!.sourcePath, 'bytes' in g])).toEqual([
+			['img/b.png', false],
+			['img/c.png', false],
+		]);
 	});
 });
 
@@ -509,6 +570,24 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(r.files[0]).toMatchObject({ outcome: 'excluded', reason: 'changed', linked: false });
 	});
 
+	it('a modify event while putting is being saved: the Put does not start (10-2)', async () => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		const markPutting = w.pending.markPutting.bind(w.pending);
+		w.pending.markPutting = async (ids) => {
+			const r = await markPutting(ids);
+			w.changed.add('img/a.png');
+			return r;
+		};
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(w.s3.ops()).toEqual(['head:k/a.png']);
+		expect(r.files[0]).toMatchObject({ outcome: 'excluded', reason: 'changed', linked: false });
+		expect(w.disk.text).toBe(note);
+		// Nothing was sent: no record is left that would claim an object may exist.
+		expect(w.pending.items).toEqual([]);
+	});
+
 	it('a source whose bytes changed without an event is caught by the rehash before linking', async () => {
 		const note = '![[a.png]]';
 		const w = await world([priv, pub], note);
@@ -537,6 +616,114 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(r.files[0]).toMatchObject({ outcome: 'unresolved', reason: 'private-recorded', linked: false });
 		expect(w.disk.text).toBe(note);
 		expect(w.copied).toEqual([]);
+	});
+
+	it('public: a file recorded as private while another one is being marked is not linked either (I2)', async () => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note, pub);
+		atLinkPhase(w, 1, () => w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)])));
+		onPrivateRecorded(w, () => w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_B)])));
+		const r = await runJob(p, confirm(w, pub), w.run);
+		expect(r.files.map((f) => [f.sourcePath, f.outcome, f.reason, f.linked])).toEqual([
+			['img/a.png', 'unresolved', 'private-recorded', false],
+			['img/b.png', 'unresolved', 'private-recorded', false],
+		]);
+		expect(w.disk.text).toBe(note);
+		expect(w.copied).toEqual([]);
+	});
+
+	it.each([
+		['deleted', 'connection-changed', (w: World) => w.settings.mutate(deleteConnectionOp(priv.id))],
+		['edited', 'connection-changed', (w: World) => w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, keyTemplate: 'k2/{filename}.{ext}' }, 'p'))],
+		// A sync brings another storage under the same alias; the connection itself is unchanged (no abort, every send was done).
+		['in conflict over its alias', undefined, (w: World) => w.settings.mutate(bindAlias('work', 'aws:example-other'))],
+		[
+			'superseded (its alias resolved to another storage)',
+			undefined,
+			async (w: World) => {
+				await w.settings.mutate(bindAlias('work', 'aws:example-other'));
+				return w.settings.mutate(resolveConflictOp('work', 'aws:example-other', 'r1'));
+			},
+		],
+	])('the connection %s after the last Put: no link, the records stay delivered (I4)', async (_, aborted, change) => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		atLinkPhase(w, 2, () => change(w));
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.aborted).toBe(aborted);
+		expect(r.files.map((f) => [f.outcome, f.reason, f.linked])).toEqual([
+			['delivered', 'connection-changed', false],
+			['delivered', 'connection-changed', false],
+		]);
+		expect(r.link).toEqual({ kind: 'none' });
+		expect(w.disk.text).toBe(note);
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered', 'delivered']);
+	});
+
+	it('copy chosen and the connection deleted after the last Put: nothing is copied (I4)', async () => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		atLinkPhase(w, 1, () => w.settings.mutate(deleteConnectionOp(priv.id)));
+		const r = await runJob(p, confirm(w, priv, 'copy'), w.run);
+		expect(r.link).toEqual({ kind: 'none' });
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('a modify event that arrives as the note is written: that file is left out, the others are linked (10-2)', async () => {
+		const note = '![[a.png]] ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		const process = w.run.note.process;
+		w.run = {
+			...w.run,
+			note: {
+				...w.run.note,
+				process: (fn) => {
+					w.changed.add('img/a.png');
+					return process(fn);
+				},
+			},
+		};
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.sourcePath, f.outcome, f.reason, f.linked])).toEqual([
+			['img/a.png', 'unresolved', 'changed', false],
+			['img/b.png', 'delivered', undefined, true],
+		]);
+		expect(w.disk.text).toBe('![[a.png]] ![b](s3-bridge://work/k/b.png)');
+		expect(w.pending.items.map((i) => [i.sourcePath, i.state])).toEqual([['img/a.png', 'unresolved']]);
+	});
+
+	it('closed note replaced but not read back as expected: warned, the records stay delivered (7-2)', async () => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const p = await plan(w, note);
+		w.run = { ...w.run, note: { ...w.run.note, read: () => Promise.resolve('something else') } };
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.link).toEqual({ kind: 'applied', apply: { applied: true, via: 'file', verified: false } });
+		expect(r.files.map((f) => [f.outcome, f.linked])).toEqual([['delivered', false]]);
+		expect(w.disk.text).toBe('![a](s3-bridge://work/k/a.png)');
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('open note that does not read back as expected after the transaction: the records stay delivered (7-2)', async () => {
+		const note = '![[a.png]]';
+		const w = await world([priv, pub], note);
+		const ed = new FakeEditor(note);
+		const transaction = ed.transaction.bind(ed);
+		ed.transaction = (tx) => {
+			transaction(tx);
+			ed.value += ' ';
+		};
+		w.editors.push(ed);
+		const r = await runJob(await plan(w, note), confirm(w, priv), w.run);
+		expect(r.link).toEqual({ kind: 'applied', apply: { applied: true, via: 'editor', verified: false } });
+		expect(r.files[0]).toMatchObject({ outcome: 'delivered', linked: false });
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
 	});
 
 	it('a collision moves to the alternate key, and the links use the final key', async () => {
@@ -903,6 +1090,30 @@ describe('copyDelivered (7-4)', () => {
 		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id, reason: 'private-recorded' }] });
 		expect(w.copied).toEqual([]);
 		expect(w.pending.items.map((i) => [i.state, i.reason])).toEqual([['unresolved', 'private-recorded']]);
+	});
+
+	it('public: a record found private while another is being marked is not copied either (I2)', async () => {
+		const w = await world();
+		w.copyFails = true;
+		await runJob(await plan(w, '![[a.png]] ![[b.png]]', pub), confirm(w, pub, 'copy'), w.run);
+		w.copyFails = false;
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered', 'delivered']);
+		await w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
+		onPrivateRecorded(w, () => w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_B)])));
+		const [a, b] = w.pending.items.map((i) => i.id);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({
+			copied: 0,
+			ok: true,
+			skipped: [
+				{ id: a, reason: 'private-recorded' },
+				{ id: b, reason: 'private-recorded' },
+			],
+		});
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => [i.state, i.reason])).toEqual([
+			['unresolved', 'private-recorded'],
+			['unresolved', 'private-recorded'],
+		]);
 	});
 
 	it('a connection that no longer points to the recorded storage is not linked', async () => {

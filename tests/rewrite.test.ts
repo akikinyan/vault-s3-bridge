@@ -174,6 +174,15 @@ describe('applyToNote (9-2)', () => {
 		expect(changed.disk).toBe(`${snapshot}x`);
 	});
 
+	it('a write no longer allowed at the moment of writing changes nothing', async () => {
+		const editor = new FakeEditor(lf(snapshot));
+		expect(await applyToNote(noteWith(snapshot, [editor]), snapshot, reps, () => false)).toEqual({ applied: false, reason: 'blocked' });
+		expect(editor.transactions).toBe(0);
+		const n = noteWith(snapshot, [], false);
+		expect(await applyToNote(n, snapshot, reps, () => false)).toEqual({ applied: false, reason: 'blocked' });
+		expect(n.disk).toBe(snapshot);
+	});
+
 	it('open at the start and closed now, or deleted: copy instead', async () => {
 		expect(await applyToNote(noteWith(snapshot, [], true), snapshot, reps)).toEqual({ applied: false, reason: 'closed' });
 		expect(await applyToNote(noteWith(undefined, [], false), snapshot, reps)).toEqual({ applied: false, reason: 'deleted' });

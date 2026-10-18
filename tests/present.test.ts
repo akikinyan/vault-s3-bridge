@@ -9,6 +9,7 @@ const B = 'b'.repeat(64);
 const S = 's'.repeat(64).replace(/s/g, 'c');
 
 function group(over: Partial<PlannedGroup> & { files: PlannedGroup['files'] }): PlannedGroup {
+	const bytes = over.bytes ?? new Uint8Array(300);
 	return {
 		groupId: 'g',
 		key: 'k/a.png',
@@ -17,9 +18,10 @@ function group(over: Partial<PlannedGroup> & { files: PlannedGroup['files'] }): 
 		sentSha256: S,
 		format: 'png',
 		converter: 'c1;orig',
-		bytes: new Uint8Array(300),
 		reencoded: false,
 		...over,
+		bytes,
+		size: bytes.length,
 	};
 }
 
@@ -164,9 +166,10 @@ describe('resultLines', () => {
 		expect(resultLines(r).warn).toBe(true);
 	});
 
-	it('an unverified replacement is reported', () => {
-		const r: JobResult = { files: [fr('delivered', true)], link: { kind: 'applied', apply: { applied: true, via: 'file', verified: false } } };
-		expect(keys(r)).toContain('upload.result.unverified');
+	it('an unverified replacement is reported once, without "not linked", and its records are left for a copy', () => {
+		const r: JobResult = { files: [fr('delivered')], link: { kind: 'applied', apply: { applied: true, via: 'file', verified: false } } };
+		expect(keys(r)).toEqual(['upload.result.unverified', 'upload.result.recordsLeft']);
+		expect(resultLines(r).warn).toBe(true);
 	});
 
 	it('counts other outcomes and the abort cause; records left only for outcomes that keep a record', () => {

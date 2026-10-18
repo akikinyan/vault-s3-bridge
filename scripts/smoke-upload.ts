@@ -13,10 +13,12 @@ import { saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore, type StoreIO } from '../src/settings/store';
 import { DEFAULT_REQUEST_TIMEOUT_MS, type StorageConnection } from '../src/settings/types';
 import { jobClients } from '../src/upload/clients';
+import { alternateKey } from '../src/upload/key';
 import { type NewPendingItem, nodePendingIO, PendingStore } from '../src/upload/pending';
 import { classifyS3Outcome, compareHead, headCommand, putCommand } from '../src/upload/s3';
 import { sendGroup, type UploaderDeps } from '../src/upload/uploader';
 import { redactText } from '../src/util/redact';
+import { errorDetail, recordedKeys } from './smokeReport';
 
 interface DevConfig {
 	profile: string;
@@ -120,6 +122,7 @@ try {
 		timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
 		check: () => undefined,
 		sourceUnchanged: () => Promise.resolve(true),
+		sourceChanged: () => false,
 		rebuild: () => Promise.resolve(bytes),
 		sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 		random: Math.random,
@@ -164,14 +167,19 @@ try {
 	report(g?.outcome === 'delivered' && g.key === keyF && hF2.ETag === hF.ETag && unused !== undefined, 'g  same bytes reuse the existing object', g?.outcome ?? '');
 
 	const bodyH = imageBytes();
+	// Registered before sending: a Put to the alternate key may leave an object even if its result is unknown.
+	const altH = alternateKey(keyF, sha256(bodyH));
+	if (altH.ok) created.add(altH.key);
 	const [hItem] = await sendGroup([item('h', bodyH, keyF)], bodyH, deps(bodyH));
 	if (hItem?.key) created.add(hItem.key);
 	const hH = hItem?.key ? await head(hItem.key) : undefined;
 	report(hItem?.outcome === 'delivered' && hItem.key !== keyF && hH !== undefined && compareHead(hH, sha256(bodyH)) === 'match', 'h  different bytes at a used key go to an alternate key', hItem?.key?.slice(prefix.length) ?? hItem?.outcome ?? '');
 	report(pending.items.every((i) => i.state === 'delivered'), 'f-h  records left for the note to be updated', `${pending.items.length} delivered`);
 } catch (error) {
-	report(false, 'unexpected error', error instanceof Error ? `${error.name}: ${error.message}` : 'unknown');
+	report(false, 'unexpected error', errorDetail(error));
 } finally {
+	// Every key a record names is cleaned up too, whatever the uploader's result said.
+	for (const key of recordedKeys(pending.items, prefix)) created.add(key);
 	// Cleanup: delete the exact version of every key this run may have written, then confirm it is gone.
 	const left: string[] = [];
 	const unverified: string[] = [];
@@ -203,6 +211,8 @@ try {
 	report(left.length === 0, 'cleanup: every object written by this run is deleted', left.length ? `left under ${prefix}: ${left.join(', ')}` : `${created.size} keys checked`);
 	if (unverified.length) process.stdout.write(redactText(`WARN  absence not confirmed (no s3:ListBucket?): ${unverified.join(', ')}`, { replacements }) + '\n');
 	clients.destroy();
-	rmSync(recordsDir, { recursive: true, force: true });
+	// The records go only when every object is confirmed gone; otherwise they show what is left to check.
+	if (left.length === 0 && unverified.length === 0) rmSync(recordsDir, { recursive: true, force: true });
+	else process.stdout.write(redactText(`WARN  records kept in ${recordsDir}`, { replacements }) + '\n');
 }
 process.exitCode = failures > 0 ? 1 : 0;
