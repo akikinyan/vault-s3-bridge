@@ -2,6 +2,7 @@
 // job lock (7-6) and tells the outcome in a notice.
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t } from '../i18n';
+import { jobClients } from '../upload/clients';
 import { copyDelivered, recordMarkdown, resumeCommand, type ResumeTarget, withLock } from '../upload/job';
 import { copyToClipboard, resumeCommandDeps, type UploadHost } from '../upload/obsidianJob';
 import type { PendingItem, PendingResult, PendingStore } from '../upload/pending';
@@ -72,7 +73,19 @@ export async function resumeRecords(host: UploadHost, pending: PendingStore): Pr
 }
 
 export async function copyRecords(host: UploadHost, pending: PendingStore, notePath: string): Promise<void> {
-	notify(copyLines(await copyDelivered({ lock: host.lock, pending, settings: host.store, copy: copyToClipboard }, notePath)));
+	// D22: public records from Phase 3 are copied only after a Head confirms how the object is served.
+	const made = new Map<string, ReturnType<typeof jobClients>>();
+	const client = (connectionId: string, signal: AbortSignal) => {
+		let c = made.get(connectionId);
+		if (!c) made.set(connectionId, (c = jobClients(host.store, connectionId)));
+		return c.client(signal);
+	};
+	try {
+		const deps = { lock: host.lock, pending, settings: host.store, copy: copyToClipboard, client, timeoutMs: host.store.current.network.timeoutMs, signal: host.unload };
+		notify(copyLines(await copyDelivered(deps, notePath)));
+	} finally {
+		for (const c of made.values()) c.destroy();
+	}
 }
 
 async function locked(host: UploadHost, op: () => Promise<PendingResult>): Promise<void> {

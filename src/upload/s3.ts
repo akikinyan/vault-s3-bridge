@@ -43,12 +43,28 @@ export function putCommand(bucket: string, key: string, body: Uint8Array, sentSh
 	});
 }
 
-export type HeadContent = 'match' | 'mismatch';
+/** delivery-mismatch: the bytes match but the object is served in another form (I14 (e)); handled as a mismatch. */
+export type HeadContent = 'match' | 'mismatch' | 'delivery-mismatch';
 
-/** The object holds exactly the bytes we would send: same full-object SHA-256. Anything else is a mismatch. */
-export function compareHead(output: Pick<HeadObjectCommandOutput, 'ChecksumSHA256' | 'ChecksumType'>, sentSha256: string): HeadContent {
+/** What a public object must also be served as: our fixed Content-Type, exactly, and no Content-Disposition. */
+export interface DeliveryExpectation {
+	contentType: string;
+}
+
+/**
+ * The object holds exactly the bytes we would send: same full-object SHA-256. Anything else is a mismatch.
+ * With `expect` (public items, design 3-4), the Content-Type must be the same string and there must be no
+ * Content-Disposition; S3 does not normalise either, so another tool's spelling is not ours.
+ */
+export function compareHead(
+	output: Pick<HeadObjectCommandOutput, 'ChecksumSHA256' | 'ChecksumType' | 'ContentType' | 'ContentDisposition'>,
+	sentSha256: string,
+	expect?: DeliveryExpectation,
+): HeadContent {
 	if (output.ChecksumType !== undefined && output.ChecksumType !== 'FULL_OBJECT') return 'mismatch';
-	return output.ChecksumSHA256 === checksumOf(sentSha256) ? 'match' : 'mismatch';
+	if (output.ChecksumSHA256 !== checksumOf(sentSha256)) return 'mismatch';
+	if (expect && (output.ContentType !== expect.contentType || output.ContentDisposition !== undefined)) return 'delivery-mismatch';
+	return 'match';
 }
 
 export type HeadOutcome = 'aborted' | 'head-forbidden' | 'absent' | 'indeterminate' | 'failed';

@@ -141,6 +141,9 @@ const REASON_KEY: Record<string, MessageKey> = {
 	'record-failed': 'upload.reason.record-failed',
 	'cannot-rebuild': 'upload.reason.cannot-rebuild',
 	'markdown-check': 'upload.reason.markdown-check',
+	'different-delivery': 'upload.reason.different-delivery',
+	'delivery-unchecked': 'upload.reason.delivery-unchecked',
+	'public-format': 'upload.reason.public-format',
 };
 
 const ABORT_KEY: Record<NonNullable<JobResult['aborted']>, MessageKey> = {
@@ -247,6 +250,8 @@ const COPY_SKIP_KEY: Record<Extract<CopyResult, { copied: number }>['skipped'][n
 	'target-mismatch': 'pending.copy.targetMismatch',
 	'markdown-check': 'pending.copy.markdownCheck',
 	'private-recorded': 'pending.copy.privateRecorded',
+	'delivery-unchecked': 'pending.copy.deliveryUnchecked',
+	'public-format': 'pending.copy.publicFormat',
 };
 
 export function copyLines(r: CopyResult): Line[] {

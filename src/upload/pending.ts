@@ -545,6 +545,7 @@ export class PendingStore {
 					...next,
 					uncertain: item.uncertain || next.uncertain || leftPutUnanswered,
 					putSent: item.putSent || next.putSent || next.state === 'putting',
+					deliveryChecked: item.deliveryChecked || next.deliveryChecked,
 					updatedAt: at,
 				};
 			});

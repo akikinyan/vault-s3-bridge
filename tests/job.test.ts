@@ -609,7 +609,7 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		w.s3.objects.set(p.groups[0]!.key, checksumOf(p.groups[0]!.sentSha256));
 		w.s3.on('head', (key) => {
 			void w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
-			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT' };
+			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT', ContentType: 'image/png' };
 		});
 		const r = await runJob(p, confirm(w, pub), w.run);
 		expect(w.s3.ops()).toEqual([`head:${p.groups[0]!.key}`]);
@@ -1101,6 +1101,59 @@ describe('resume (7-4, 6-5)', () => {
 		expect('done' in r && r.done[0]!.results).toEqual([{ id: w.pending.items[0]!.id, outcome: 'stopped', reason: 'credentials' }]);
 		expect(w.s3.calls).toEqual([]);
 		expect(w.pending.items.map((i) => i.state)).toEqual(['stopped']);
+	});
+});
+
+describe('copyDelivered: public records whose delivery form was never checked (D22, design 3-6)', () => {
+	/** A delivered public record as Phase 3 left it: migrated from version 1, so deliveryChecked is false. */
+	async function phase3Record(w: World) {
+		w.copyFails = true;
+		await runJob(await plan(w, '![[a.png]]', pub), confirm(w, pub, 'copy'), w.run);
+		w.copyFails = false;
+		const name = [...w.pendingIO.files.keys()][0]!;
+		const file = JSON.parse(w.pendingIO.files.get(name)!) as { items: Record<string, unknown>[] };
+		file.items = file.items.map((i) => ({ ...i, deliveryChecked: false }));
+		w.pendingIO.files.set(name, JSON.stringify(file));
+		await w.pending.load();
+		expect(w.pending.items.map((i) => [i.state, i.deliveryChecked])).toEqual([['delivered', false]]);
+		return w.pending.items[0]!;
+	}
+	const withClient = (w: World) => ({ ...copyDeps(w), client: () => Promise.resolve(w.s3 as never), timeoutMs: 15_000 });
+
+	it('copies after one Head finds the recorded Content-Type, and records the check', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		w.s3.calls.length = 0;
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.s3.ops()).toEqual([`head:${item.key}`]);
+		expect(w.copied).toHaveLength(1);
+	});
+
+	it('does not copy when the object is served with another Content-Type, and keeps the record', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		w.s3.types.set(item.key, 'text/html');
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id: item.id, reason: 'delivery-unchecked' }] });
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => [i.state, i.deliveryChecked])).toEqual([['delivered', false]]);
+	});
+
+	it('does not copy without a client (no Head can be made)', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id: item.id, reason: 'delivery-unchecked' }] });
+		expect(w.copied).toEqual([]);
+	});
+
+	it('copies a record of our own Put without any Head', async () => {
+		const w = await world();
+		w.copyFails = true;
+		await runJob(await plan(w, '![[a.png]]', pub), confirm(w, pub, 'copy'), w.run);
+		w.copyFails = false;
+		expect(w.pending.items[0]?.deliveryChecked).toBe(true);
+		w.s3.calls.length = 0;
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.s3.calls).toEqual([]);
 	});
 });
 

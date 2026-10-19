@@ -154,3 +154,20 @@ describe('classifyS3Outcome (6-2) with errors built by the SDK', () => {
 		expect(classifyS3Outcome('head', new Error('strange'), false).outcome).toBe('failed');
 	});
 });
+
+describe('compareHead: delivery form (I14 (e), design 3-4)', () => {
+	const sum = checksumOf(SENT);
+	const expect_ = { contentType: 'application/pdf' };
+	it('matches only the exact Content-Type with no Content-Disposition', () => {
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'application/pdf' }, SENT, expect_)).toBe('match');
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'Application/PDF' }, SENT, expect_)).toBe('delivery-mismatch');
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'application/pdf; x=1' }, SENT, expect_)).toBe('delivery-mismatch');
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'text/html' }, SENT, expect_)).toBe('delivery-mismatch');
+		expect(compareHead({ ChecksumSHA256: sum }, SENT, expect_)).toBe('delivery-mismatch');
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'application/pdf', ContentDisposition: 'inline' }, SENT, expect_)).toBe('delivery-mismatch');
+	});
+	it('reports other bytes as a mismatch first, and ignores the type without an expectation', () => {
+		expect(compareHead({ ChecksumSHA256: checksumOf('0'.repeat(64)), ContentType: 'text/html' }, SENT, expect_)).toBe('mismatch');
+		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'text/html', ContentDisposition: 'attachment' }, SENT)).toBe('match');
+	});
+});

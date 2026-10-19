@@ -61,9 +61,16 @@ export const sdkError = (status: number, name: string) => Object.assign(new Erro
 
 export type Answer = (key: string, signal: AbortSignal | undefined) => unknown;
 
-/** In-memory bucket: Head returns the stored checksum, Put never overwrites. Scripted answers come first. */
+/**
+ * In-memory bucket: Head returns the stored checksum and Content-Type, Put never overwrites. Scripted answers come
+ * first. Objects placed by a test through `objects` are served as `image/png` unless `types` says otherwise.
+ */
 export class FakeS3 {
 	readonly objects = new Map<string, string>();
+	/** Content-Type per key (what a Put sent); missing means `image/png`. */
+	readonly types = new Map<string, string>();
+	/** Content-Disposition per key: set by a test to model another tool's object. */
+	readonly dispositions = new Map<string, string>();
 	readonly calls: { op: 'head' | 'put'; key: string; timeout?: number }[] = [];
 	readonly script: { op: 'head' | 'put'; answer: Answer }[] = [];
 	constructor(private readonly log: Log) {}
@@ -79,10 +86,13 @@ export class FakeS3 {
 		}
 		if (op === 'head') {
 			const sum = this.objects.get(key);
-			return sum === undefined ? Promise.reject(sdkError(404, 'NotFound')) : Promise.resolve({ ChecksumSHA256: sum, ChecksumType: 'FULL_OBJECT' });
+			if (sum === undefined) return Promise.reject(sdkError(404, 'NotFound'));
+			const disposition = this.dispositions.get(key);
+			return Promise.resolve({ ChecksumSHA256: sum, ChecksumType: 'FULL_OBJECT', ContentType: this.types.get(key) ?? 'image/png', ...(disposition === undefined ? {} : { ContentDisposition: disposition }) });
 		}
 		if (this.objects.has(key)) return Promise.reject(sdkError(412, 'PreconditionFailed'));
 		this.objects.set(key, command.input.ChecksumSHA256 as string);
+		this.types.set(key, command.input.ContentType as string);
 		return Promise.resolve({});
 	}
 	on(op: 'head' | 'put', answer: Answer): this {

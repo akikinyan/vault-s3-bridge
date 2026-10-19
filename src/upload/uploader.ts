@@ -7,6 +7,7 @@ import { addPrivateFilesOp, appendHistoryOp } from '../settings/ops';
 import type { SettingsStore } from '../settings/store';
 import type { HistoryEntry, PluginSettings } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
+import { publicUseOf } from './fileType';
 import { alternateKey } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
 import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_MIN_TIMEOUT_MS, putCommand } from './s3';
@@ -121,8 +122,11 @@ class Group {
 
 	// --- conditions -------------------------------------------------------
 
-	/** 10-3: everything checked synchronously right before a request starts. */
-	private refusal(settings: DeepReadonly<PluginSettings>): string | undefined {
+	/**
+	 * 10-3: everything checked synchronously right before a request starts. Design 3-5: a Head creates nothing and
+	 * returns no URL, so the public format rule applies to Puts only; the delivery check is never required here.
+	 */
+	private refusal(settings: DeepReadonly<PluginSettings>, op: 'head' | 'put'): string | undefined {
 		if (this.deps.signal.aborted) return 'aborted';
 		const job = this.deps.check(settings);
 		if (job) return job;
@@ -138,15 +142,17 @@ class Group {
 		if (items[0]?.classification === 'public') {
 			const recorded = new Set(settings.privateFiles);
 			if (recorded.has(items[0].sentSha256) || this.sources.some((h) => recorded.has(h))) return 'private-recorded';
+			// I14 (a)-(c): a format that may never be public is never put there, whatever led to this Put.
+			if (op === 'put' && items.some((i) => publicUseOf(i.format) === 'reject')) return 'public-format';
 		}
 		return undefined;
 	}
 
 	/** Starts the request inside the checkpoint, without any await between the checks and send(). */
-	private start<T>(send: () => Promise<T>, more: () => string | undefined = () => undefined): Promise<Started<T>> {
+	private start<T>(op: 'head' | 'put', send: () => Promise<T>, more: () => string | undefined = () => undefined): Promise<Started<T>> {
 		return this.deps.settings
 			.checkpoint((settings) => {
-				const reason = this.refusal(settings) ?? more();
+				const reason = this.refusal(settings, op) ?? more();
 				if (reason) return { started: false as const, reason };
 				try {
 					return { started: true as const, response: send() };
@@ -191,12 +197,15 @@ class Group {
 	private async head(): Promise<{ stopped: string } | { result: HeadContent | HeadOutcome }> {
 		const sent = this.first().sentSha256;
 		const key = this.key();
-		const started = await this.start<HeadObjectCommandOutput>(() =>
+		const started = await this.start<HeadObjectCommandOutput>('head', () =>
 			this.deps.client.send(headCommand(this.bucket, key), { abortSignal: this.deps.signal, requestTimeout: this.deps.timeoutMs }),
 		);
 		if (!started.started) return { stopped: started.reason };
+		// I14 (e): a public object is reused only if it is also served the way we would put it.
+		const f = this.first();
+		const expect = f.classification === 'public' ? { contentType: f.contentType } : undefined;
 		try {
-			return { result: compareHead(await started.response, sent) };
+			return { result: compareHead(await started.response, sent, expect) };
 		} catch (error) {
 			return { result: classifyS3Outcome('head', error, this.deps.signal.aborted).outcome };
 		}
@@ -219,6 +228,7 @@ class Group {
 		const ids = [...this.live];
 		if (!(await this.deps.pending.markPutting(ids)).ok) return { stopped: 'record-failed', settled: false };
 		const started = await this.start(
+			'put',
 			() =>
 				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.contentType), {
 					abortSignal: this.deps.signal,
@@ -283,8 +293,11 @@ class Group {
 
 			switch (next.do) {
 				case 'reuse':
+					// A public Head matched the Content-Type too (I14 (e)); a private one checked the bytes only.
+					return this.succeed(this.first().classification === 'public');
 				case 'uploaded':
-					return this.succeed();
+					// Our own Put: the object is served exactly as we put it.
+					return this.succeed(true);
 				case 'put':
 					stage = 'put';
 					break;
@@ -375,12 +388,15 @@ class Group {
 		return this.unresolved(reason);
 	}
 
-	/** reused or uploaded: done-unrecorded, then the history, then delivered (7-2). */
-	private async succeed(): Promise<void> {
+	/**
+	 * reused or uploaded: done-unrecorded, then the history, then delivered (7-2). `deliveryKnown`: the object's
+	 * delivery form is known to be the items' Content-Type (I14 (f)); recorded with the first write.
+	 */
+	private async succeed(deliveryKnown: boolean): Promise<void> {
 		const ids = [...this.live];
 		const key = this.key();
 		const items = this.items();
-		await this.deps.pending.update(ids, { state: 'done-unrecorded' });
+		await this.deps.pending.update(ids, { state: 'done-unrecorded', ...(deliveryKnown ? { deliveryChecked: true as const } : {}) });
 		const at = this.deps.now().toISOString();
 		const entries: HistoryEntry[] = items.map((i) => ({
 			id: this.deps.newId(),

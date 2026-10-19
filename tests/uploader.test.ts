@@ -938,3 +938,45 @@ describe('Step 4: I1 for hashes that are already recorded', () => {
 		expect(s.s3.ops()).toEqual(['head:k/a.png']);
 	});
 });
+
+describe('delivery form of public objects (I14, design 3-4 and 3-5)', () => {
+	const ALT = `k/a-${SENT.slice(0, 8)}.png`;
+
+	it('does not reuse a public object with the same bytes but another Content-Type; puts at the alternate key with its own', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.types.set('k/a.png', 'text/html');
+		expect(await sendGroup([pubItem('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'delivered', key: ALT }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', `head:${ALT}`, `put:${ALT}`]);
+		expect(s.s3.types.get(ALT)).toBe('image/png');
+		expect(stateOf(s, 'a')?.deliveryChecked).toBe(true);
+	});
+
+	it('does not reuse a public object that carries a Content-Disposition', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.dispositions.set('k/a.png', 'inline');
+		expect((await sendGroup([pubItem('a')], BODY, s.deps))[0]?.key).toBe(ALT);
+	});
+
+	it('records a public reuse as checked, and a private reuse (bytes only) as not checked', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		await sendGroup([pubItem('a')], BODY, s.deps);
+		expect(stateOf(s, 'a')?.deliveryChecked).toBe(true);
+		const p = await setup();
+		p.s3.objects.set('k/a.png', checksumOf(SENT));
+		p.s3.types.set('k/a.png', 'text/html');
+		expect(await sendGroup([item('a')], BODY, p.deps)).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
+		expect(p.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(p, 'a')?.deliveryChecked).toBe(false);
+	});
+
+	it('never puts a public item of a format that may not be public, though its Head is allowed', async () => {
+		const s = await setup();
+		const r = await sendGroup([pubItem('a', { format: 'svg', contentType: 'image/svg+xml' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'stopped', reason: 'public-format' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', putSent: true, uncertain: false });
+	});
+});

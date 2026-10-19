@@ -2,6 +2,7 @@
 // but writes nothing (the preview command stops there, I13); sending goes group by group through the uploader;
 // the note changes only over the exact snapshot, otherwise the Markdown is copied (I7). Obsidian stays outside:
 // everything it provides is passed in.
+import type { S3Client } from '@aws-sdk/client-s3';
 import { stableStringify } from '../settings/migrate';
 import { connectionState, connectionTarget } from '../settings/registry';
 import type { SettingsStore, StoreChange } from '../settings/store';
@@ -9,10 +10,11 @@ import type { PluginSettings, StorageConnection, UploadFormat } from '../setting
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
 import { type Encoder, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
-import { type ImageFormat, imageContentType } from './fileType';
+import { type ImageFormat, imageContentType, publicUseOf } from './fileType';
 import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
+import { compareHead, headCommand } from './s3';
 import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Target, verifyMarkdown } from './rewrite';
 import { type ItemResult, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
@@ -599,6 +601,17 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 	await unlink(deps, changed, 'changed');
 	ready = ready.filter((r) => !changed.includes(r));
 
+	// I14 (f), design 3-5: a public link is written only to an object whose delivery form was checked (our Put, or a
+	// Head that matched the Content-Type) and whose format may be public at all.
+	if (plan.target.classification === 'public') {
+		const unchecked = ready.filter((r) => {
+			const item = deps.pending.items.find((i) => i.id === r.itemId);
+			return !item || !item.deliveryChecked || publicUseOf(item.format) === 'reject';
+		});
+		await unlink(deps, unchecked, 'delivery-unchecked');
+		ready = ready.filter((r) => !unchecked.includes(r));
+	}
+
 	let entries: LinkEntry[] = [];
 	for (const r of ready) {
 		const { f, g } = files.get(r.itemId)!;
@@ -912,11 +925,48 @@ export interface CopyDeps {
 	pending: PendingStore;
 	settings: Pick<SettingsStore, 'current' | 'checkpoint' | 'readOnly'>;
 	copy(text: string): Promise<boolean>;
+	/**
+	 * Design 3-6 (D22): a client for the Head that checks the delivery form of a public record that was never
+	 * checked (records from Phase 3). Without it such records are not copied.
+	 */
+	client?(connectionId: string, signal: AbortSignal): Promise<Pick<S3Client, 'send'>>;
+	timeoutMs?: number;
+	signal?: AbortSignal;
 }
 
-export type CopyResult =
-	| { stop: 'busy' | 'pending-not-ready' | 'nothing' }
-	| { copied: number; ok: boolean; skipped: { id: string; reason: 'target-mismatch' | 'markdown-check' | 'private-recorded' }[] };
+export type CopySkipReason = 'target-mismatch' | 'markdown-check' | 'private-recorded' | 'delivery-unchecked' | 'public-format';
+
+export type CopyResult = { stop: 'busy' | 'pending-not-ready' | 'nothing' } | { copied: number; ok: boolean; skipped: { id: string; reason: CopySkipReason }[] };
+
+/**
+ * D22: one Head, started inside a checkpoint (same storage as recorded, not read-only, I2), that the object at the
+ * record's key holds the recorded bytes and is served as the record's Content-Type with no Content-Disposition.
+ */
+async function checkDelivery(deps: CopyDeps, item: DeepReadonly<PendingItem>): Promise<boolean> {
+	if (!deps.client) return false;
+	const signal = deps.signal ?? new AbortController().signal;
+	let client: Pick<S3Client, 'send'>;
+	try {
+		client = await deps.client(item.connectionId, signal);
+	} catch {
+		return false;
+	}
+	const started = await deps.settings
+		.checkpoint((s) => {
+			if (deps.settings.readOnly !== undefined) return undefined;
+			const c = sameStorage(s, item);
+			const recorded = new Set(s.privateFiles);
+			if (!c || recorded.has(item.sourceSha256) || recorded.has(item.sentSha256)) return undefined;
+			return { response: client.send(headCommand(c.bucket, item.altKey ?? item.key), { abortSignal: signal, requestTimeout: deps.timeoutMs }) };
+		})
+		.catch(() => undefined);
+	if (!started) return false;
+	try {
+		return compareHead(await started.response, item.sentSha256, { contentType: item.contentType }) === 'match';
+	} catch {
+		return false;
+	}
+}
 
 /**
  * "Copy Markdown" for the delivered records of one note (7-4, 6-5 step 4), so the lines can be pasted where they
@@ -930,6 +980,16 @@ export async function copyDelivered(deps: CopyDeps, notePath: string): Promise<C
 		if (deps.pending.status !== 'ready') return { stop: 'pending-not-ready' };
 		const delivered = deps.pending.items.filter((i) => i.state === 'delivered' && i.notePath === notePath);
 		if (delivered.length === 0) return { stop: 'nothing' };
+		// D22: public records whose delivery form was never checked get one Head first; the current source file is
+		// never the evidence (D13).
+		const verified = new Set<string>();
+		for (const item of delivered) {
+			if (item.classification !== 'public' || item.deliveryChecked || publicUseOf(item.format) === 'reject') continue;
+			if (await checkDelivery(deps, item)) {
+				verified.add(item.id);
+				await deps.pending.update([item.id], { deliveryChecked: true });
+			}
+		}
 		type Skipped = Extract<CopyResult, { copied: number }>['skipped'];
 		/** The lines and the records they stand for, with the settings of one checkpoint. */
 		const evaluate = (s: DeepReadonly<PluginSettings>, items: readonly DeepReadonly<PendingItem>[]) => {
@@ -940,6 +1000,15 @@ export async function copyDelivered(deps: CopyDeps, notePath: string): Promise<C
 			for (const item of items) {
 				if (item.classification === 'public' && (recorded.has(item.sourceSha256) || recorded.has(item.sentSha256))) {
 					skipped.push({ id: item.id, reason: 'private-recorded' });
+					continue;
+				}
+				// I14 (f): public URLs only for formats that may be public, at objects whose delivery form is known.
+				if (item.classification === 'public' && publicUseOf(item.format) === 'reject') {
+					skipped.push({ id: item.id, reason: 'public-format' });
+					continue;
+				}
+				if (item.classification === 'public' && !item.deliveryChecked && !verified.has(item.id)) {
+					skipped.push({ id: item.id, reason: 'delivery-unchecked' });
 					continue;
 				}
 				const c = sameStorage(s, item);
