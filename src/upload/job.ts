@@ -9,6 +9,7 @@ import type { PluginSettings, StorageConnection, UploadFormat } from '../setting
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
 import { type Encoder, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
+import { type ImageFormat, imageContentType } from './fileType';
 import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
@@ -96,6 +97,8 @@ export interface PlannedGroup {
 	phase: 'candidate' | 'prepared';
 	sentSha256: string;
 	format: UploadFormat;
+	/** The fixed Content-Type every file of the group is put with (fileType.ts). */
+	contentType: string;
 	converter: string;
 	bytes: Uint8Array;
 	/** Bytes sent: bytes.length, kept for the screen where the bytes are not held. */
@@ -183,7 +186,7 @@ interface Prepared {
 	bytes: Uint8Array | undefined;
 	size: number;
 	sentSha256: string;
-	format: UploadFormat;
+	format: ImageFormat;
 	converter: string;
 	reencoded: boolean;
 	preparedKey: string;
@@ -270,6 +273,7 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 				phase: candidate ? 'candidate' : 'prepared',
 				sentSha256: p.sentSha256,
 				format: p.format,
+				contentType: imageContentType(p.format),
 				converter: p.converter,
 				bytes: p.bytes,
 				size: p.size,
@@ -436,12 +440,14 @@ function newItems(plan: JobPlan, group: PlannedGroup, apply: 'replace' | 'copy')
 		sentSha256: group.sentSha256,
 		size: group.size,
 		format: group.format,
+		contentType: group.contentType,
 		converter: group.converter,
 		key: group.key,
 		preparedKey: group.preparedKey,
 		phase: group.phase,
 		occurrences: f.occurrences.map((o) => ({
 			original: o.original,
+			kind: 'embed' as const,
 			alt: altFor({ syntax: o.syntax, target: rt, fileBase: f.basename }),
 			...(o.syntax.size === undefined ? {} : { size: o.syntax.size }),
 			inTable: o.inTable,

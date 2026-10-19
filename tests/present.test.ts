@@ -17,6 +17,7 @@ function group(over: Partial<PlannedGroup> & { files: PlannedGroup['files'] }): 
 		phase: 'prepared',
 		sentSha256: S,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		reencoded: false,
 		...over,

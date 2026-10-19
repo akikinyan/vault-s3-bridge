@@ -59,6 +59,7 @@ function normalizeUpload(raw: unknown): UploadSettings {
 		webp: { enabled: webp.enabled === true, quality: between(webp.quality, 0.5, 1, DEFAULT_UPLOAD.webp.quality) },
 		stripPrivate: u.stripPrivate === true,
 		maxFileMB: between(u.maxFileMB, 1, 100, DEFAULT_UPLOAD.maxFileMB),
+		maxOtherFileMB: between(u.maxOtherFileMB, 1, 100, DEFAULT_UPLOAD.maxOtherFileMB),
 		maxJobMB: between(u.maxJobMB, 10, 1000, DEFAULT_UPLOAD.maxJobMB),
 		excludeFolders: [...new Set(folders.map(str).filter((f): f is string => f !== undefined).map((f) => f.replace(/^\/+|\/+$/g, '')))].filter((f) => f !== '').sort(),
 	};
@@ -142,6 +143,8 @@ export function loadSettings(raw: unknown, device: DeviceState): LoadResult {
 		},
 		preview: {
 			maxFileMB: positive(preview.maxFileMB, DEFAULT_PREVIEW.maxFileMB),
+			maxPdfMB: between(preview.maxPdfMB, 1, 100, DEFAULT_PREVIEW.maxPdfMB),
+			maxTextMB: between(preview.maxTextMB, 1, 20, DEFAULT_PREVIEW.maxTextMB),
 			maxMegapixels: positive(preview.maxMegapixels, DEFAULT_PREVIEW.maxMegapixels),
 			cacheMB: nonNegative(preview.cacheMB, DEFAULT_PREVIEW.cacheMB),
 		},

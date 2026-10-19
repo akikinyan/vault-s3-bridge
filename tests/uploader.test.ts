@@ -89,11 +89,12 @@ function item(id: string, over: Partial<NewPendingItem> = {}): NewPendingItem {
 		sentSha256: SENT,
 		size: BODY.byteLength,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		key: 'k/a.png',
 		preparedKey: 'k/a.png',
 		phase: 'prepared',
-		occurrences: [{ original: `![[${id}.png]]`, alt: id, inTable: false }],
+		occurrences: [{ original: `![[${id}.png]]`, kind: 'embed', alt: id, inTable: false }],
 		apply: 'replace',
 		...over,
 	};

@@ -220,7 +220,7 @@ class Group {
 		if (!(await this.deps.pending.markPutting(ids)).ok) return { stopped: 'record-failed', settled: false };
 		const started = await this.start(
 			() =>
-				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.format), {
+				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.contentType), {
 					abortSignal: this.deps.signal,
 					requestTimeout: Math.max(this.deps.timeoutMs, PUT_MIN_TIMEOUT_MS),
 				}),

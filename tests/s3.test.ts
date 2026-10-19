@@ -40,7 +40,7 @@ const s3Error = (code: string) => `<?xml version="1.0" encoding="UTF-8"?><Error>
 /** Lets the real SDK build the error for a canned response, then classifies it. */
 async function putError(status: number, code?: string): Promise<unknown> {
 	const { client } = clientAnswering({ status, headers: code ? { 'content-type': 'application/xml' } : {}, body: code ? s3Error(code) : '' });
-	return client.send(putCommand('<bucket>', 'k/a.png', BODY, SENT, 'png')).then(
+	return client.send(putCommand('<bucket>', 'k/a.png', BODY, SENT, 'image/png')).then(
 		() => {
 			throw new Error('expected an error');
 		},
@@ -60,7 +60,7 @@ async function headError(status: number): Promise<unknown> {
 describe('request headers (6-1)', () => {
 	it('Put: our SHA-256 checksum as sent, if-none-match, no CRC32, content type and length', async () => {
 		const { client, captured } = clientAnswering({ status: 200, headers: { etag: '"e"' } });
-		await client.send(putCommand('<bucket>', 'k/画像 1.png', BODY, SENT, 'png'), { requestTimeout: PUT_MIN_TIMEOUT_MS });
+		await client.send(putCommand('<bucket>', 'k/画像 1.png', BODY, SENT, 'image/png'), { requestTimeout: PUT_MIN_TIMEOUT_MS });
 		expect(captured).toHaveLength(1);
 		const h = captured[0]!.headers;
 		expect(captured[0]!.method).toBe('PUT');
@@ -87,14 +87,15 @@ describe('request headers (6-1)', () => {
 
 	it('sends a failing request once (maxAttempts 1)', async () => {
 		const { client, captured } = clientAnswering({ status: 503, headers: { 'content-type': 'application/xml' }, body: s3Error('SlowDown') });
-		await expect(client.send(putCommand('<bucket>', 'k/a.png', BODY, SENT, 'png'))).rejects.toBeDefined();
+		await expect(client.send(putCommand('<bucket>', 'k/a.png', BODY, SENT, 'image/png'))).rejects.toBeDefined();
 		expect(captured).toHaveLength(1);
 	});
 
 	it('maps formats to content types and rejects a checksum that is not SHA-256 hex', () => {
-		expect(putCommand('<bucket>', 'k', BODY, SENT, 'jpeg').input.ContentType).toBe('image/jpeg');
-		expect(putCommand('<bucket>', 'k', BODY, SENT, 'webp').input.ContentType).toBe('image/webp');
-		expect(putCommand('<bucket>', 'k', BODY, SENT, 'gif').input.ContentType).toBe('image/gif');
+		// The Content-Type is passed through exactly as given (one of the fixed strings of fileType.ts), never derived.
+		expect(putCommand('<bucket>', 'k', BODY, SENT, 'image/jpeg').input.ContentType).toBe('image/jpeg');
+		expect(putCommand('<bucket>', 'k', BODY, SENT, 'text/plain; charset=utf-8').input.ContentType).toBe('text/plain; charset=utf-8');
+		expect(putCommand('<bucket>', 'k', BODY, SENT, 'application/pdf').input).not.toHaveProperty('ContentDisposition');
 		expect(() => checksumOf('abc')).toThrow();
 	});
 });

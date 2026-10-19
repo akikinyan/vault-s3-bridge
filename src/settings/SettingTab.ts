@@ -1,4 +1,4 @@
-import { type App, Notice, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
+import { type App, Notice, PluginSettingTab, type SettingDefinition, type SettingDefinitionItem } from 'obsidian';
 import { listSsoProfileNames, loadSharedConfig } from '../aws/profiles';
 import { t, type MessageKey } from '../i18n';
 import { confirm } from '../ui/ConfirmModal';
@@ -198,6 +198,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 						visible: pending.status === 'damaged',
 						action: () => run(() => resetDamagedRecords(host, pending)),
 					},
+					// Written by a newer version: kept as is, with no reset (design 1-2).
+					{ name: t('settings.pendingFuture'), desc: t('settings.pendingFutureDesc'), visible: pending.status === 'future' },
 					{
 						name: t('settings.pendingResume'),
 						desc: t('settings.pendingResumeDesc'),
@@ -211,7 +213,9 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 						visible: ready,
 						action: () => run(() => copyRecords(host, pending, notePath)),
 					})),
-					...this.others.flatMap((o) => {
+					...this.others.flatMap((o): SettingDefinition<ControlKey>[] => {
+						// A file of a newer version is kept as is: it can be neither taken over nor discarded here (1-2).
+						if ('future' in o) return [{ name: t('settings.pendingOtherFuture'), desc: t('settings.pendingFutureDesc') }];
 						const name = 'damaged' in o ? t('settings.pendingOtherDamaged') : t('settings.pendingOther', { n: String(o.count) });
 						return [
 							{

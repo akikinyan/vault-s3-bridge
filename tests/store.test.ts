@@ -48,7 +48,7 @@ describe('SettingsStore — reading', () => {
 		const io = new FakeIO();
 		io.disk = { schemaVersion: 1, connections: [{ ...priv, auth: { type: 'aws-sso-profile', profile: 'sso-a' } }] };
 		const store = await storeWith(io);
-		expect(store.current.schemaVersion).toBe(3);
+		expect(store.current.schemaVersion).toBe(4);
 		expect(store.current.privateBuckets).toEqual(['aws:x']);
 		expect(store.device.profiles.c1?.profile).toBe('sso-a');
 		expect(io.saves).toHaveLength(1);

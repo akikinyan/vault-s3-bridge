@@ -142,11 +142,12 @@ try {
 		sentSha256: sha256(bytes),
 		size: bytes.byteLength,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		key,
 		preparedKey: key,
 		phase: 'prepared',
-		occurrences: [{ original: `![[${id}.png]]`, alt: id, inTable: false }],
+		occurrences: [{ original: `![[${id}.png]]`, kind: 'embed', alt: id, inTable: false }],
 		apply: 'replace',
 		...over,
 	});

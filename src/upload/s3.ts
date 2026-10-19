@@ -3,9 +3,6 @@
 import { HeadObjectCommand, type HeadObjectCommandOutput, PutObjectCommand, S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { classifyError } from '../aws/errors';
 import { isSha256Hex } from '../settings/history';
-import type { UploadFormat } from '../settings/types';
-
-const CONTENT_TYPE: Record<UploadFormat, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
 
 /**
  * The client for uploads: one attempt per request (the uploader decides every retry, 6-4) and static credentials
@@ -29,13 +26,16 @@ export function headCommand(bucket: string, key: string): HeadObjectCommand {
 	return new HeadObjectCommand({ Bucket: bucket, Key: key, ChecksumMode: 'ENABLED' });
 }
 
-/** Conditional Put that never overwrites, with the checksum the job computed (the SDK sends it as given). */
-export function putCommand(bucket: string, key: string, body: Uint8Array, sentSha256: string, format: UploadFormat): PutObjectCommand {
+/**
+ * Conditional Put that never overwrites, with the checksum the job computed (the SDK sends it as given).
+ * `contentType` is one of the fixed strings of fileType.ts (I14 (d)); no Content-Disposition is ever set.
+ */
+export function putCommand(bucket: string, key: string, body: Uint8Array, sentSha256: string, contentType: string): PutObjectCommand {
 	return new PutObjectCommand({
 		Bucket: bucket,
 		Key: key,
 		Body: body,
-		ContentType: CONTENT_TYPE[format],
+		ContentType: contentType,
 		ContentLength: body.byteLength,
 		ChecksumAlgorithm: 'SHA256',
 		ChecksumSHA256: checksumOf(sentSha256),

@@ -85,7 +85,7 @@ describe('migration to schemaVersion 3', () => {
 
 	it('v1 → v3 stores the default key template of each classification and adds empty records', () => {
 		const { settings, changed } = loadSettings(v1, emptyDeviceState());
-		expect(settings.schemaVersion).toBe(3);
+		expect(settings.schemaVersion).toBe(4);
 		expect(settings.connections.map((c) => c.keyTemplate)).toEqual([DEFAULT_KEY_TEMPLATE.private, DEFAULT_KEY_TEMPLATE.public]);
 		expect(settings).toMatchObject({ privateFiles: [], history: [], historyLimit: 2000, upload: DEFAULT_UPLOAD });
 		expect(changed).toBe(true);
@@ -103,7 +103,7 @@ describe('migration to schemaVersion 3', () => {
 			{
 				schemaVersion: 3,
 				privateFiles: [h(1), 'ABC', h(1).toUpperCase(), 7],
-				history: [entry(1), { ...entry(2), sentSha256: 'x' }, { ...entry(3), format: 'svg' }, 'junk'],
+				history: [entry(1), { ...entry(2), sentSha256: 'x' }, { ...entry(3), format: 'bmp' }, 'junk'],
 				historyLimit: 5,
 				upload: { webp: { enabled: true, quality: 3 }, maxFileMB: 0, maxJobMB: 50, excludeFolders: ['/a/b/', 'a/b', '', 1] },
 			},

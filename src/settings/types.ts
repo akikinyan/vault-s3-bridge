@@ -1,3 +1,4 @@
+import type { FileFormat } from '../upload/fileType';
 import type { TargetKey } from '../storage/target';
 
 export type Classification = 'private' | 'public';
@@ -48,14 +49,20 @@ export interface NetworkSettings {
 }
 
 export interface PreviewSettings {
+	/** Images. */
 	maxFileMB: number;
+	/** PDF bytes fetched for a preview. */
+	maxPdfMB: number;
+	/** Text bytes fetched for a preview. */
+	maxTextMB: number;
 	maxMegapixels: number;
 	cacheMB: number;
 }
 
 export type LanguageSetting = 'auto' | 'ja' | 'en';
 
-export type UploadFormat = 'png' | 'jpeg' | 'webp' | 'gif';
+/** Format recorded for an upload: the image formats of Phase 3 and the attachment formats of Phase 4. */
+export type UploadFormat = FileFormat;
 
 export interface UploadSettings {
 	/** Connection chosen by default in the upload dialog. */
@@ -63,7 +70,10 @@ export interface UploadSettings {
 	webp: { enabled: boolean; quality: number };
 	/** Strip metadata for private uploads too (always stripped for public ones). */
 	stripPrivate: boolean;
+	/** Images (decoded, so a lower limit). */
 	maxFileMB: number;
+	/** Every other attachment (read whole into memory for a single Put). */
+	maxOtherFileMB: number;
 	maxJobMB: number;
 	/** Normalised vault folder paths whose notes are never uploaded from. */
 	excludeFolders: string[];
@@ -87,7 +97,7 @@ export interface HistoryEntry {
 }
 
 export interface PluginSettings {
-	schemaVersion: 3;
+	schemaVersion: 4;
 	connections: StorageConnection[];
 	aliasBindings: AliasBinding[];
 	aliasResolutions: AliasResolution[];
@@ -104,12 +114,12 @@ export interface PluginSettings {
 	extra?: Record<string, unknown>;
 }
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const CONNECT_TIMEOUT_MS = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 export const CLEANUP_TIMEOUT_MS = 10_000;
 
-export const DEFAULT_PREVIEW: PreviewSettings = { maxFileMB: 20, maxMegapixels: 40, cacheMB: 100 };
+export const DEFAULT_PREVIEW: PreviewSettings = { maxFileMB: 20, maxPdfMB: 50, maxTextMB: 5, maxMegapixels: 40, cacheMB: 100 };
 
 export const DEFAULT_KEY_TEMPLATE: Record<Classification, string> = {
 	// Public URLs reveal the key: no note or file names by default.
@@ -121,6 +131,7 @@ export const DEFAULT_UPLOAD: UploadSettings = {
 	webp: { enabled: false, quality: 0.85 },
 	stripPrivate: false,
 	maxFileMB: 20,
+	maxOtherFileMB: 100,
 	maxJobMB: 200,
 	excludeFolders: [],
 };

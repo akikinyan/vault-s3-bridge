@@ -37,7 +37,7 @@ describe('upload settings (11-3)', () => {
 		expect(await set('uploadMaxJobMB', 500)).toBe(true);
 		expect(await set('excludeFolders', '/Private/\nArchive , Private\n\n')).toBe(true);
 		expect(await set('historyLimit', 5000)).toBe(true);
-		const expected = { defaultConnectionId: 'c1', webp: { enabled: true, quality: 0.73 }, stripPrivate: true, maxFileMB: 30, maxJobMB: 500, excludeFolders: ['Archive', 'Private'] };
+		const expected = { defaultConnectionId: 'c1', webp: { enabled: true, quality: 0.73 }, stripPrivate: true, maxFileMB: 30, maxOtherFileMB: 100, maxJobMB: 500, excludeFolders: ['Archive', 'Private'] };
 		expect(s.current.upload).toEqual(expected);
 		expect(s.current.historyLimit).toBe(5000);
 		// The preview limit is a different setting.
