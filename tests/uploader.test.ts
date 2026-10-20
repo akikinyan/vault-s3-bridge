@@ -1094,4 +1094,20 @@ describe('sendGroup — I15 in a mixed group (design 4-2, 4-5)', () => {
 		const b = stateOf(s, 'b')!;
 		expect([b.state, b.reason, b.key, b.groupId === 'g-1']).toEqual(['stopped', 'needs-confirmation', 'p/a.pdf', false]);
 	});
+
+	it('setting an unconfirmed item aside cannot be written: nothing is put, and both stay in their group', async () => {
+		const s = await setup();
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		s.s3.on('put', timeout).on('put', timeout);
+		await sendGroup([pdf('a'), pdf('b')], undefined, { ...s.deps, isConfirmed: () => true });
+		s.s3.calls.length = 0;
+		s.pending.setAsideUnconfirmed = () => Promise.resolve({ ok: false, reason: 'write-failed' });
+		const r = await resumeGroup(['a', 'b'], { ...s.deps, isConfirmed: (i) => i.id === 'a' });
+		expect(r).toEqual([
+			{ id: 'a', outcome: 'stopped', reason: 'record-failed' },
+			{ id: 'b', outcome: 'stopped', reason: 'record-failed' },
+		]);
+		expect(s.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+		expect(s.pending.items.map((i) => i.groupId)).toEqual(['g-1', 'g-1']);
+	});
 });

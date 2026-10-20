@@ -194,20 +194,22 @@ class Group {
 	 * Design 4-2: right before any Put (send or recover mode), items whose format needs confirming in public storage
 	 * and that the user did not confirm leave the group. A Head could reuse an object for them; a Put cannot.
 	 */
-	private async dropUnconfirmed(): Promise<void> {
+	private async dropUnconfirmed(): Promise<boolean> {
 		const out = this.items().filter((i) => i.classification === 'public' && publicUseOf(i.format) === 'confirm' && this.deps.isConfirmed?.(i) !== true);
-		if (out.length === 0) return;
-		const ids = out.map((i) => i.id);
-		if ((await this.deps.pending.removeIfNeverSent(ids)).ok) return this.settle(ids, 'excluded', 'needs-confirmation');
-		// 4-5: a record that may have created an object stays, in a new group so the others can finish.
+		if (out.length === 0) return true;
+		const kept: string[] = [];
 		for (const item of out) {
-			if ((await this.deps.pending.removeIfNeverSent([item.id])).ok) this.settle([item.id], 'excluded', 'needs-confirmation');
+			const removed = await this.deps.pending.removeIfNeverSent([item.id]);
+			if (removed.ok) this.settle([item.id], 'excluded', 'needs-confirmation');
+			else if (removed.reason === 'not-removable') kept.push(item.id);
+			else return false;
 		}
-		const kept = out.map((i) => i.id).filter((id) => this.live.includes(id));
-		if (kept.length > 0) {
-			await this.deps.pending.setAsideUnconfirmed(kept, this.deps.newId());
-			this.settle(kept, 'stopped', 'needs-confirmation');
-		}
+		if (kept.length === 0) return true;
+		// 4-5: a record that may have created an object stays, in a new group so it can be resumed by itself. If that
+		// cannot be written, nothing is put: the record would stay in this group and be passed over once it is done.
+		if (!(await this.deps.pending.setAsideUnconfirmed(kept, this.deps.newId())).ok) return false;
+		this.settle(kept, 'stopped', 'needs-confirmation');
+		return true;
 	}
 
 	/** 10-2 before checking and putting in send mode: changed sources leave the group. */
@@ -310,7 +312,7 @@ class Group {
 			if (this.live.length === 0) return;
 			let next: Next;
 			if (stage === 'put') {
-				await this.dropUnconfirmed();
+				if (!(await this.dropUnconfirmed())) return this.stop('record-failed');
 				if (this.live.length === 0) return;
 				await this.dropChanged();
 				if (this.live.length === 0) return;
