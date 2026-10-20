@@ -129,6 +129,7 @@ export const en = {
 	'preview.access-denied': 'Access denied.',
 	'preview.not-found': 'File not found.',
 	'preview.too-large': 'File is larger than the preview limit.',
+	'preview.modal.title': 'Preview',
 	'preview.text.truncated': 'Only the beginning is shown.',
 	'preview.info.other': 'File',
 	'preview.info.mismatch': 'The contents do not match the extension.',

@@ -2,6 +2,7 @@ import type { NodeHttpHandler } from '@smithy/node-http-handler';
 import { join } from 'node:path';
 import { FileSystemAdapter, getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
 import { setLanguage, t, type MessageKey } from './i18n';
+import { type CommandRegistry, guardLinkCommands, LinkGuard, s3LinkAt } from './preview/linkGuard';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
 import { ImageReplacer } from './preview/replacer';
@@ -21,6 +22,7 @@ import { nodePendingIO, PendingStore } from './upload/pending';
 import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
 import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
+import { PreviewModal } from './ui/PreviewModal';
 import { runUploadCommand, uploadTarget } from './ui/uploadFlow';
 
 const SWEEP_INTERVAL_MS = 30_000;
@@ -100,6 +102,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 		});
 		this.registerEditorExtension(livePreviewExtension(this.replacer));
 		this.registerInterval(window.setInterval(() => this.replacer.sweep(), SWEEP_INTERVAL_MS));
+		this.guardLinks();
 
 		this.settingTab = new VaultS3BridgeSettingTab(this.app, this);
 		this.addSettingTab(this.settingTab);
@@ -112,6 +115,37 @@ export default class VaultS3BridgePlugin extends Plugin {
 		});
 		this.addCommand({ id: 'upload-current-note', name: t('command.upload'), callback: () => void this.upload(false) });
 		this.addCommand({ id: 'preview-upload', name: t('command.previewUpload'), callback: () => void this.upload(true) });
+	}
+
+	/**
+	 * Design 7-5: `s3-bridge:` links open the preview modal, never anything outside Obsidian. Every window is
+	 * guarded, including popouts already open when the plugin loads; everything is put back on unload.
+	 */
+	private guardLinks(): void {
+		const openPreview = (url: string) => new PreviewModal(this.app, url, () => this.preview).open();
+		const guard = new LinkGuard({ openPreview });
+		this.register(() => guard.dispose());
+		guard.install(window);
+		const installAll = () =>
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				guard.install(leaf.view.containerEl.win);
+			});
+		installAll();
+		this.app.workspace.onLayoutReady(installAll);
+		this.registerEvent(this.app.workspace.on('window-open', (w) => guard.install(w.win)));
+		this.registerEvent(this.app.workspace.on('window-close', (w) => guard.uninstall(w.win)));
+		// Layer 2 relies on Obsidian's command registry, which is not a public API: without it, layer 3 still holds.
+		const restore = guardLinkCommands(
+			(this.app as unknown as { commands?: CommandRegistry }).commands,
+			() => {
+				const editor = this.app.workspace.activeEditor?.editor;
+				if (!editor) return undefined;
+				const cursor = editor.getCursor();
+				return s3LinkAt(editor.getLine(cursor.line), cursor.ch);
+			},
+			openPreview,
+		);
+		if (restore) this.register(restore);
 	}
 
 	private async upload(preview: boolean): Promise<void> {

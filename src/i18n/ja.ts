@@ -131,6 +131,7 @@ export const ja: Record<MessageKey, string> = {
 	'preview.access-denied': 'アクセスが拒否されました。',
 	'preview.not-found': 'ファイルが見つかりません。',
 	'preview.too-large': 'ファイルがプレビューの上限より大きいため表示しません。',
+	'preview.modal.title': 'プレビュー',
 	'preview.text.truncated': '先頭の一部だけを表示しています。',
 	'preview.info.other': 'ファイル',
 	'preview.info.mismatch': '内容が拡張子と一致しません。',
