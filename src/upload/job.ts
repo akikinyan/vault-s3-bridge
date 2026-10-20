@@ -16,7 +16,7 @@ import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, ty
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
 import { compareHead, headCommand } from './s3';
-import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Target, verifyMarkdown } from './rewrite';
+import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, outputShape, type Target, verifyMarkdown } from './rewrite';
 import { type ItemResult, type RebuildRefusal, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
 
@@ -906,8 +906,10 @@ export function recordMarkdown(item: DeepReadonly<PendingItem>, connection: Deep
 	const target = recordTarget(connection);
 	if (!target) return undefined;
 	const key = item.altKey ?? item.key;
-	const mds = [...new Set(item.occurrences.map((o) => markdownFor(o, target, key)))];
-	return mds.every((md) => verifyMarkdown(md, target, key)) ? mds : undefined;
+	// Design 6-4: the shape follows from the record as when it was prepared; the stored text is not escaped again.
+	const parts = item.occurrences.map((o) => ({ shape: outputShape(o.kind, item.format, item.classification), alt: o.alt, ...(o.size === undefined ? {} : { size: o.size }), inTable: o.inTable }));
+	if (!parts.every((x) => verifyMarkdown(markdownFor(x, target, key), target, key, x))) return undefined;
+	return [...new Set(parts.map((x) => markdownFor(x, target, key)))];
 }
 
 export interface ResumeTarget {

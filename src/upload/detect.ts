@@ -252,7 +252,16 @@ function where(line: Line): { inTable: boolean; inNestedTable: boolean } {
 }
 
 /** One left-to-right pass over the text of normal lines. */
-export function parseEmbeds(text: string): ParsedNote {
+export interface ParseOptions {
+	/**
+	 * Design 6-3: also count embeds and links whose destination has a scheme. Only for checking generated Markdown,
+	 * which always has one; the cache does not report them, so detection never sets it.
+	 */
+	countSchemeReferences?: boolean;
+}
+
+export function parseEmbeds(text: string, options: ParseOptions = {}): ParsedNote {
+	const schemes = options.countSchemeReferences === true;
 	const lone = text.search(/\r(?!\n)/);
 	if (lone >= 0) return { ok: false, problem: 'lone-cr', offset: lone };
 	const lines = splitLines(text);
@@ -375,7 +384,7 @@ export function parseEmbeds(text: string): ParsedNote {
 			if (len > 0) {
 				const original = text.slice(p, p + len);
 				// URLs with a scheme (https://, s3-bridge://) are not embeds for the cache (measured).
-				if (!hasScheme(original)) embeds.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
+				if (schemes || !hasScheme(original)) embeds.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
 				p += len;
 				continue;
 			}
@@ -393,7 +402,7 @@ export function parseEmbeds(text: string): ParsedNote {
 			if (len > 1) {
 				const original = text.slice(p, p - 1 + len);
 				// Links with a scheme are not in the cache's links either (measured).
-				if (!SCHEME.test(linkDestination(original))) links.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
+				if (schemes || !SCHEME.test(linkDestination(original))) links.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
 				// Past '[' only: an image in the link text is an embed of its own.
 				p++;
 				continue;
@@ -411,14 +420,8 @@ export function parseEmbeds(text: string): ParsedNote {
 
 /** The destination of `[text](dest)`, after the bracket that closes the text (the text may hold an image). */
 function linkDestination(link: string): string {
-	let depth = 0;
-	for (let i = 0; i < link.length; i++) {
-		const c = link[i];
-		if (c === '\\') i++;
-		else if (c === '[') depth++;
-		else if (c === ']' && --depth === 0) return link.slice(i + 2).replace(/^</, '');
-	}
-	return '';
+	const close = linkTextEnd(link);
+	return close < 0 ? '' : link.slice(close + 2).replace(/^</, '');
 }
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -598,6 +601,59 @@ export function parseEmbedSyntax(original: string, inTable: boolean): { ok: true
 	const size = bar >= 0 ? parseSize(alt.slice(bar + 1)) : undefined;
 	if (size) alt = alt.slice(0, bar);
 	return { ok: true, value: size ? { kind: 'markdown', path, alt, size } : { kind: 'markdown', path, alt } };
+}
+
+export type LinkSyntax = { kind: 'wiki'; path: string; text?: string } | { kind: 'markdown'; path: string; text: string };
+
+/**
+ * Design 6-1: the parts of a link the upload can rewrite. `x` in `[[p|x]]` is the display text, never a size; in a
+ * table the parts are separated by `\|`. The text of `[t](p)` is Markdown and kept as written.
+ */
+export function parseLinkSyntax(original: string, inTable: boolean): { ok: true; value: LinkSyntax } | { ok: false; reason: SyntaxRejection } {
+	const reject = (reason: SyntaxRejection) => ({ ok: false as const, reason });
+	const pathKind = (path: string): SyntaxRejection | undefined => {
+		if (path === '') return 'unparsable';
+		if (path.startsWith('s3-bridge:')) return 'reference';
+		if (SCHEME.test(path)) return 'external';
+		if (path.includes('#') || path.includes('^')) return 'subpath';
+		return undefined;
+	};
+	if (original.startsWith('[[') && original.endsWith(']]')) {
+		const inner = original.slice(2, -2);
+		if (!inTable && inner.includes('\\|')) return reject('escaped-pipe');
+		const parts = inTable ? inner.split('\\|') : inner.split('|');
+		if (inTable && parts.some((x) => x.includes('|'))) return reject('unparsable');
+		if (parts.length > 2) return reject('multiple-pipes');
+		const path = parts[0]!;
+		const bad = pathKind(path);
+		if (bad) return reject(bad);
+		return { ok: true, value: parts[1] === undefined ? { kind: 'wiki', path } : { kind: 'wiki', path, text: parts[1] } };
+	}
+	const close = original.startsWith('[') ? linkTextEnd(original) : -1;
+	if (close < 0) return reject('unparsable');
+	const m = /^\((<[^>\n]*>|[^\s]*)([ \t]+\S.*)?\)$/s.exec(original.slice(close + 1));
+	if (!m) return reject('unparsable');
+	if (m[2] !== undefined) return reject('title');
+	const dest = m[1]!;
+	const path = dest.startsWith('<') ? dest.slice(1, -1) : dest;
+	const bad = pathKind(path);
+	if (bad) return reject(bad);
+	const text = original.slice(1, close);
+	// As for embeds: outside a detected table, `\|` may be a cell of a table the parser cannot see.
+	if (!inTable && text.includes('\\|')) return reject('escaped-pipe');
+	return { ok: true, value: { kind: 'markdown', path, text } };
+}
+
+/** Index of the `]` that closes the text of `[text](dest)`; -1 if there is none. */
+function linkTextEnd(link: string): number {
+	let depth = 0;
+	for (let i = 0; i < link.length; i++) {
+		const c = link[i];
+		if (c === '\\') i++;
+		else if (c === '[') depth++;
+		else if (c === ']' && --depth === 0) return i;
+	}
+	return -1;
 }
 
 // --- the detection flow (8-3) --------------------------------------------------

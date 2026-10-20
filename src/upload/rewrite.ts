@@ -1,8 +1,10 @@
-// Markdown for uploaded images and the replacement in the note (design 9). The note changes only if it still
-// holds exactly the snapshot the job detected the embeds in (I7); otherwise the caller copies the Markdown.
+// Markdown for uploaded files and the replacement in the note (design 9, Phase 4 design 6). The note changes only if
+// it still holds exactly the snapshot the job detected the references in (I7); otherwise the caller copies the Markdown.
 import { encodeSegment, formatReference, parseReference, safeAltText } from '../reference/reference';
+import type { UploadFormat } from '../settings/types';
 import { validatePublicBaseUrl } from '../settings/validate';
-import { type EmbedSyntax, markdownImageLength } from './detect';
+import { type EmbedSyntax, type LinkSyntax, parseEmbeds } from './detect';
+import { isImageFormat } from './fileType';
 
 export type Target = { classification: 'public'; publicBaseUrl: string } | { classification: 'private'; alias: string };
 
@@ -31,19 +33,125 @@ export function altFor(input: Pick<MarkdownInput, 'syntax' | 'target' | 'fileBas
 }
 
 export function buildMarkdown(input: MarkdownInput): string {
-	return markdownFor({ alt: altFor(input), size: input.syntax.size, inTable: input.inTable }, input.target, input.key);
+	return markdownFor({ shape: 'embed', alt: altFor(input), size: input.syntax.size, inTable: input.inTable }, input.target, input.key);
 }
 
-/** From an alt text already made safe (as stored in a resume record's occurrence, 7-1). */
-export function markdownFor(o: { alt: string; size?: string; inTable: boolean }, target: Target, key: string): string {
+/** The kind of reference the note had. */
+export type ReferenceKind = 'embed' | 'link';
+
+/**
+ * Design 6-2: what the generated Markdown is. A link stays a link; an image embed stays an embed; another file's
+ * embed becomes a link in public storage (an external URL of it does not show as an embed, Step 1 O4).
+ */
+export function outputShape(kind: ReferenceKind, format: UploadFormat, classification: Target['classification']): ReferenceKind {
+	if (kind === 'link' || isImageFormat(format)) return kind;
+	return classification === 'public' ? 'link' : 'embed';
+}
+
+/** Characters with a meaning inside a line of Markdown (design 6-2). */
+const LINK_TEXT_SPECIAL = /[\\`*_[\]<>!|~=$%#&^]/g;
+
+// eslint-disable-next-line no-control-regex -- control characters are exactly what this matches
+const CONTROL = /[\u0000-\u001f\u007f]/g;
+
+/** Design 6-2: plain text as the text of a link: control characters become spaces, specials get a backslash. */
+export function escapeLinkText(text: string): string {
+	return text.replace(CONTROL, ' ').replace(LINK_TEXT_SPECIAL, (c) => `\\${c}`);
+}
+
+/** The text a reader sees for an escaped link text: a backslash before ASCII punctuation is dropped. */
+export function unescapeLinkText(text: string): string {
+	return text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+}
+
+export type ReferenceSource = { kind: 'embed'; syntax: EmbedSyntax } | { kind: 'link'; syntax: LinkSyntax };
+
+export interface ReferenceInput {
+	source: ReferenceSource;
+	format: UploadFormat;
+	target: Target;
+	key: string;
+	/** The source file's name with its extension. */
+	fileName: string;
+	/** The source file's name without its extension (an image's private default alt, as in Phase 3). */
+	fileBase: string;
+	inTable: boolean;
+}
+
+/** What a record keeps of one occurrence (1-2): the text inside the brackets as written, never escaped again. */
+export interface ReferenceParts {
+	shape: ReferenceKind;
+	alt: string;
+	size?: string;
+	inTable: boolean;
+}
+
+export type BuiltReference = { ok: true; parts: ReferenceParts; markdown: string } | { ok: false; reason: 'escaped-text' | 'markdown-check' };
+
+/** Design 6-2 and 6-3: the Markdown for one reference, checked by reading it back. */
+export function buildReference(input: ReferenceInput): BuiltReference {
+	const { source, target } = input;
+	const shape = outputShape(source.kind, input.format, target.classification);
+	let alt: string;
+	/** Escaped plain text: what it must read as. */
+	let plain: string | undefined;
+	let size: string | undefined;
+	if (source.kind === 'embed' && isImageFormat(input.format)) {
+		alt = altFor({ syntax: source.syntax, target, fileBase: input.fileBase });
+		size = source.syntax.size;
+	} else if (source.kind === 'embed') {
+		const s = source.syntax;
+		const written = s.kind === 'wiki' ? s.alt : s.alt === '' ? undefined : s.alt;
+		if (shape === 'embed') {
+			alt = safeAltText(written ?? input.fileName);
+			size = s.size;
+		} else {
+			// The alt of `![t](p)` is Markdown: a backslash in it would show once escaped again.
+			if (s.kind === 'markdown' && written?.includes('\\')) return { ok: false, reason: 'escaped-text' };
+			plain = written ?? input.fileName;
+			alt = escapeLinkText(plain);
+		}
+	} else if (source.syntax.kind === 'wiki') {
+		plain = source.syntax.text ?? input.fileName;
+		alt = escapeLinkText(plain);
+	} else {
+		alt = source.syntax.text;
+	}
+	const parts: ReferenceParts = { shape, alt, ...(size === undefined ? {} : { size }), inTable: input.inTable };
+	const markdown = markdownFor(parts, target, input.key);
+	if (!verifyMarkdown(markdown, target, input.key, parts) || (plain !== undefined && unescapeLinkText(alt) !== plain.replace(CONTROL, ' '))) {
+		return { ok: false, reason: 'markdown-check' };
+	}
+	return { ok: true, parts, markdown };
+}
+
+/** From the parts as stored in a resume record's occurrence (7-1, 6-4): nothing is escaped again. */
+export function markdownFor(o: ReferenceParts, target: Target, key: string): string {
 	const url = target.classification === 'public' ? publicUrl(target.publicBaseUrl, key) : formatReference(target.alias, key);
+	if (o.shape === 'link') return `[${o.alt}](${url})`;
 	const bar = o.inTable ? '\\|' : '|';
 	return `![${o.alt}${o.size ? `${bar}${o.size}` : ''}](${url})`;
 }
 
-/** 9-3 check: the generated Markdown is exactly one image, and the key comes back out of its URL or reference. */
-export function verifyMarkdown(markdown: string, target: Target, key: string): boolean {
-	if (markdownImageLength(markdown, 0) !== markdown.length || !markdown.startsWith('![')) return false;
+/** A `|` without a backslash before it (a backslash escapes the next character only). */
+function hasBarePipe(text: string): boolean {
+	for (let i = 0; i < text.length; i++) {
+		if (text[i] === '\\') i++;
+		else if (text[i] === '|') return true;
+	}
+	return false;
+}
+
+/**
+ * 9-3 and design 6-3: the generated Markdown is exactly one embed or link of the expected shape, read with schemes
+ * counted; the key comes back out of its URL or reference; in a table it has no bare `|`.
+ */
+export function verifyMarkdown(markdown: string, target: Target, key: string, expect: Pick<ReferenceParts, 'shape' | 'inTable'> = { shape: 'embed', inTable: false }): boolean {
+	const parsed = parseEmbeds(markdown, { countSchemeReferences: true });
+	if (!parsed.ok) return false;
+	const found = expect.shape === 'embed' ? parsed.embeds : parsed.links;
+	if (parsed.embeds.length + parsed.links.length !== 1 || found[0]?.offset !== 0 || found[0].original !== markdown || found[0].inComment) return false;
+	if (expect.inTable && hasBarePipe(markdown)) return false;
 	const m = /\]\(([^()\s]+)\)$/.exec(markdown);
 	if (!m) return false;
 	const url = m[1]!;
