@@ -8,22 +8,25 @@ const note = (name: string) => readFileSync(new URL(`./fixtures/notes/${name}.md
 const cacheOf = (name: string): CacheView => {
 	const raw = JSON.parse(readFileSync(new URL(`./fixtures/notes/${name}.cache.json`, import.meta.url), 'utf8')) as {
 		embeds: { offset: number; original: string }[];
+		links: { offset: number; original: string }[];
 		sections: { type: string; startLine: number; endLine: number }[];
 	};
-	return { embeds: raw.embeds, tables: raw.sections.filter((s) => s.type === 'table'), comments: raw.sections.filter((s) => s.type === 'comment') };
+	return { embeds: raw.embeds, links: raw.links, tables: raw.sections.filter((s) => s.type === 'table'), comments: raw.sections.filter((s) => s.type === 'comment') };
 };
-const parsed = (text: string) => {
+const parsedAll = (text: string) => {
 	const r = parseEmbeds(text);
 	if (!r.ok) throw new Error(`unparsable: ${r.problem}`);
-	return r.embeds;
+	return r;
 };
+const parsed = (text: string) => parsedAll(text).embeds;
 
 describe('parseEmbeds against measured metadataCache output', () => {
 	it.each(['embeds', 'embeds-v1', 'embeds-v1-fenced', 'embeds-2', 'embeds-crlf'])('%s: the same embeds, offsets, strings and table membership as the cache', (name) => {
 		const text = note(name);
 		const cache = cacheOf(name);
-		const own = parsed(text);
-		expect(own.map(({ offset, original }) => ({ offset, original }))).toEqual(cache.embeds);
+		const own = parsedAll(text);
+		expect(own.embeds.map(({ offset, original }) => ({ offset, original }))).toEqual(cache.embeds);
+		expect(own.links.map(({ offset, original }) => ({ offset, original }))).toEqual(cache.links);
 		expect(compareWithCache(text, own, cache)).toBeUndefined();
 	});
 
@@ -97,7 +100,7 @@ describe('parseEmbeds against measured metadataCache output', () => {
 		if (!p.ok) throw new Error();
 		const embeds = p.embeds.map(({ offset, original }) => ({ offset, original }));
 		const tables = [3, 8, 14].map((startLine) => ({ startLine, endLine: startLine + 2 }));
-		expect(compareWithCache(text, p.embeds, { embeds, tables, comments: [] })).toBeUndefined();
+		expect(compareWithCache(text, p, { embeds, links: [], tables, comments: [] })).toBeUndefined();
 	});
 
 	it('an unclosed fence (the measured 3b case) hides everything after it, as in the cache', () => {
@@ -116,32 +119,48 @@ describe('the measured notes saved with CRLF', () => {
 		const lf = note(name);
 		const cache = cacheOf(name);
 		const text = crlf(lf);
-		const crlfCache: CacheView = { ...cache, embeds: cache.embeds.map((e) => ({ ...e, offset: shift(lf, e.offset) })) };
-		const own = parsed(text);
-		expect(own.map(({ offset, original }) => ({ offset, original }))).toEqual(crlfCache.embeds);
+		const move = (e: { offset: number; original: string }) => ({ ...e, offset: shift(lf, e.offset) });
+		const crlfCache: CacheView = { ...cache, embeds: cache.embeds.map(move), links: cache.links.map(move) };
+		const own = parsedAll(text);
+		expect(own.embeds.map(({ offset, original }) => ({ offset, original }))).toEqual(crlfCache.embeds);
 		expect(compareWithCache(text, own, crlfCache)).toBeUndefined();
-		for (const e of own) expect(text.slice(e.offset, e.offset + e.original.length)).toBe(e.original);
+		for (const e of [...own.embeds, ...own.links]) expect(text.slice(e.offset, e.offset + e.original.length)).toBe(e.original);
 	});
 });
 
 describe('compareWithCache', () => {
 	const text = note('embeds');
-	const own = parsed(text);
+	const all = parsedAll(text);
+	const own = all.embeds;
 	const cache = cacheOf('embeds');
+	const embedsOnly = (embeds: typeof own) => ({ embeds, links: all.links });
 
 	it('reports embeds only one side has, a count difference, and table disagreements', () => {
-		expect(compareWithCache(text, own, { ...cache, embeds: cache.embeds.slice(1) })).toEqual({ onlyOwn: [own[0] && { offset: own[0].offset, original: own[0].original }], onlyCache: [], table: [], comment: [] });
+		expect(compareWithCache(text, all, { ...cache, embeds: cache.embeds.slice(1) })).toEqual({
+			onlyOwn: [{ kind: 'embed', offset: own[0]!.offset, original: own[0]!.original }],
+			onlyCache: [],
+			table: [],
+			comment: [],
+		});
 		const moved = cache.embeds.map((e, i) => (i === 0 ? { ...e, offset: e.offset + 1 } : e));
-		expect(compareWithCache(text, own, { ...cache, embeds: moved })?.onlyCache).toHaveLength(1);
+		expect(compareWithCache(text, all, { ...cache, embeds: moved })?.onlyCache).toHaveLength(1);
 		// The cache's table ranges are stale (e.g. right after the row above became a delimiter row).
-		expect(compareWithCache(text, own, { ...cache, tables: [] })?.table.map((e) => e.offset)).toEqual([233, 274]);
-		expect(compareWithCache(text, [...own, own[0]!], cache)).toBeDefined(); // same set, different count
+		expect(compareWithCache(text, all, { ...cache, tables: [] })?.table.map((e) => e.offset)).toEqual([233, 274]);
+		expect(compareWithCache(text, embedsOnly([...own, own[0]!]), cache)).toBeDefined(); // same set, different count
+	});
+
+	it('links are part of the comparison: missing, extra or counted as an embed, they do not match (5-4)', () => {
+		expect(compareWithCache(text, all, { ...cache, links: [] })?.onlyOwn).toEqual([{ kind: 'link', offset: 928, original: '[[escaped-should-be-ignored.png]]' }]);
+		expect(compareWithCache(text, { ...all, links: [] }, cache)?.onlyCache).toEqual([{ kind: 'link', offset: 928, original: '[[escaped-should-be-ignored.png]]' }]);
+		const asEmbed = { ...cache, embeds: [...cache.embeds, ...cache.links], links: [] };
+		expect(compareWithCache(text, all, asEmbed)).toBeDefined();
+		expect(compareWithCache(text, { ...all, links: [...all.links, all.links[0]!] }, cache)).toBeDefined();
 	});
 
 	it('an embed in a cache comment section must be in a %% comment for the parser too', () => {
 		// comment@41-43 is the %% block around ![[percent-block-ignored.png]] (offset 755).
 		const flipped = own.map((e) => (e.offset === 755 ? { ...e, inComment: false } : e));
-		expect(compareWithCache(text, flipped, cache)?.comment).toEqual([{ offset: 755, original: '![[percent-block-ignored.png]]' }]);
+		expect(compareWithCache(text, embedsOnly(flipped), cache)?.comment).toEqual([{ kind: 'embed', offset: 755, original: '![[percent-block-ignored.png]]' }]);
 	});
 
 	it('counts lines the same way for CRLF and LF', () => {
@@ -156,6 +175,7 @@ describe('parseEmbeds: what it refuses to guess', () => {
 		['unclosed-percent', 'a %% ![[x.png]]'],
 		['unclosed-html-comment', 'a <!-- ![[x.png]]'],
 		['comment-spans-block', '%%\n```\n![[x.png]]\n```\n%%'],
+		['percent-in-code-in-comment', '%% `a %% b` ![[x.png]] %%'],
 	])('%s', (problem, text) => {
 		expect(parseEmbeds(text)).toMatchObject({ ok: false, problem });
 	});
@@ -268,5 +288,53 @@ describe('detectEmbeds (8-3)', () => {
 	it('a note without a cache entry yet is a mismatch unless it has no embeds', async () => {
 		expect(await detectEmbeds(source(['# empty\n'], [undefined]))).toMatchObject({ ok: true, embeds: [] });
 		expect(await detectEmbeds(source([text], [undefined]))).toMatchObject({ ok: false, reason: 'mismatch' });
+	});
+});
+
+describe('links against measured metadataCache output (design 5-1 to 5-3)', () => {
+	// The cache's positions as line:column (both 0-based, UTF-16), turned into offsets of the stored text.
+	const measured = (name: string) => {
+		const text = note(name);
+		const raw = JSON.parse(readFileSync(new URL(`./fixtures/notes/${name}.cache.json`, import.meta.url), 'utf8')) as Record<'links' | 'embeds', { pos: string; original: string }[]>;
+		const starts = [0, ...[...text.matchAll(/\n/g)].map((m) => m.index + 1)];
+		const at = (pos: string) => {
+			const [line, col] = pos.split('-')[0]!.split(':').map(Number);
+			return starts[line!]! + col!;
+		};
+		const view = (xs: { pos: string; original: string }[]) => xs.map((x) => ({ offset: at(x.pos), original: x.original }));
+		return { text, links: view(raw.links), embeds: view(raw.embeds) };
+	};
+	const strip = (xs: readonly { offset: number; original: string }[]) => xs.map(({ offset, original }) => ({ offset, original }));
+
+	it.each(['links', 'links-comment-code'])('%s: the same links and embeds as the cache', (name) => {
+		const m = measured(name);
+		const own = parsedAll(m.text);
+		expect(strip(own.links)).toEqual(m.links);
+		expect(strip(own.embeds)).toEqual(m.embeds);
+		for (const e of [...own.embeds, ...own.links]) expect(m.text.slice(e.offset, e.offset + e.original.length)).toBe(e.original);
+	});
+
+	it('wiki and Markdown links, an image inside a link, schemes, escapes, code and comments', () => {
+		const own = parsedAll(note('links'));
+		const kinds = own.links.map((l) => [l.original, l.inComment, l.inTable]);
+		expect(kinds).toContainEqual(['[![a](a.png)](x.pdf)', false, false]);
+		expect(kinds).toContainEqual(['[[x.pdf\\|表の別名]]', false, true]);
+		expect(kinds).toContainEqual(['[[x.pdf]]', true, false]);
+		expect(own.links.map((l) => l.original)).not.toContain('[external](https://example.com/x.pdf)');
+		expect(own.embeds.map((e) => e.original)).toEqual(['![[x.pdf]]', '![a](a.png)']);
+	});
+
+	it('reference-style links and definitions are counted apart, not compared (5-3)', () => {
+		const text = note('links');
+		const own = parsedAll(text);
+		expect(own.references.map((o) => text.slice(o, text.indexOf('\n', o)))).toEqual(['[ref][id]', '[id]: x.pdf']);
+	});
+
+	it('inline code inside a comment hides its links; a %% inside that code stops the note (5-2)', () => {
+		const own = parsedAll(note('links-comment-code'));
+		expect(own.links.map((l) => l.original)).not.toContain('[[c-wiki.pdf]]');
+		expect(own.embeds.map((e) => e.original)).toEqual(['![[c-plain.png]]']);
+		expect(parseEmbeds(note('links-stop-code-1'))).toMatchObject({ ok: false, problem: 'percent-in-code-in-comment' });
+		expect(parseEmbeds(note('links-stop-code-2'))).toMatchObject({ ok: false, problem: 'percent-in-code-in-comment' });
 	});
 });

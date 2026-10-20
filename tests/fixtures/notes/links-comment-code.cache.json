@@ -1,0 +1,26 @@
+{
+	"links": [
+		{
+			"pos": "7:5-25",
+			"original": "[[c-after-code.pdf]]"
+		},
+		{
+			"pos": "9:9-32",
+			"original": "[[c-unclosed-code.pdf]]"
+		},
+		{
+			"pos": "11:14-31",
+			"original": "[[c-outside.pdf]]"
+		},
+		{
+			"pos": "13:11-26",
+			"original": "[[c-plain.pdf]]"
+		}
+	],
+	"embeds": [
+		{
+			"pos": "13:27-43",
+			"original": "![[c-plain.png]]"
+		}
+	]
+}

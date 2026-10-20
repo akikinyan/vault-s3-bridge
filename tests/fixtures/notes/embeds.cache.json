@@ -49,6 +49,12 @@
 			"original": "![[assets/examples/apng-anim.png]]"
 		}
 	],
+	"links": [
+		{
+			"offset": 928,
+			"original": "[[escaped-should-be-ignored.png]]"
+		}
+	],
 	"sections": [
 		{
 			"type": "yaml",

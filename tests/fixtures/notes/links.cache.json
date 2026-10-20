@@ -1,0 +1,106 @@
+{
+	"links": [
+		{
+			"pos": "6:3-12",
+			"original": "[[x.pdf]]",
+			"link": "x.pdf",
+			"displayText": "x.pdf"
+		},
+		{
+			"pos": "7:3-22",
+			"original": "[[x.pdf#page=3|別名]]",
+			"link": "x.pdf#page=3",
+			"displayText": "別名"
+		},
+		{
+			"pos": "8:3-16",
+			"original": "[[x.pdf|300]]",
+			"link": "x.pdf",
+			"displayText": "300"
+		},
+		{
+			"pos": "9:3-13",
+			"original": "[t](x.pdf)",
+			"link": "x.pdf",
+			"displayText": "t"
+		},
+		{
+			"pos": "10:3-17",
+			"original": "[t](<x y.pdf>)",
+			"link": "x y.pdf",
+			"displayText": "t"
+		},
+		{
+			"pos": "11:3-16",
+			"original": "[a\\|b](x.pdf)",
+			"link": "x.pdf",
+			"displayText": "a|b"
+		},
+		{
+			"pos": "12:3-17",
+			"original": "[t](x%20y.pdf)",
+			"link": "x y.pdf",
+			"displayText": "t"
+		},
+		{
+			"pos": "14:3-15",
+			"original": "[[O1 リンク操作]]",
+			"link": "O1 リンク操作",
+			"displayText": "O1 リンク操作"
+		},
+		{
+			"pos": "15:4-25",
+			"original": "[[O1 リンク操作#O1 リンク操作]]",
+			"link": "O1 リンク操作#O1 リンク操作",
+			"displayText": "O1 リンク操作 > O1 リンク操作"
+		},
+		{
+			"pos": "18:4-24",
+			"original": "[![a](a.png)](x.pdf)",
+			"link": "x.pdf",
+			"displayText": "a.png"
+		},
+		{
+			"pos": "24:6-21",
+			"original": "[[x.pdf\\|表の別名]]",
+			"link": "x.pdf",
+			"displayText": "表の別名"
+		},
+		{
+			"pos": "25:6-16",
+			"original": "[t](x.pdf)",
+			"link": "x.pdf",
+			"displayText": "t"
+		},
+		{
+			"pos": "28:2-11",
+			"original": "[[x.pdf]]",
+			"link": "x.pdf",
+			"displayText": "x.pdf"
+		},
+		{
+			"pos": "28:14-24",
+			"original": "[t](x.pdf)",
+			"link": "x.pdf",
+			"displayText": "t"
+		},
+		{
+			"pos": "30:3-12",
+			"original": "[[x.pdf]]",
+			"link": "x.pdf",
+			"displayText": "x.pdf"
+		}
+	],
+	"embeds": [
+		{
+			"pos": "13:3-13",
+			"original": "![[x.pdf]]",
+			"link": "x.pdf"
+		},
+		{
+			"pos": "18:5-16",
+			"original": "![a](a.png)",
+			"link": "a.png"
+		}
+	]
+}

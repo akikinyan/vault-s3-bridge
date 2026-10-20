@@ -53,6 +53,7 @@ export function detectSource(app: App, file: TFile): DetectSource {
 				(c.sections ?? []).filter((s) => s.type === type).map((s) => ({ startLine: s.position.start.line, endLine: s.position.end.line }));
 			return {
 				embeds: (c.embeds ?? []).map((e) => ({ offset: e.position.start.offset, original: e.original })),
+				links: (c.links ?? []).map((e) => ({ offset: e.position.start.offset, original: e.original })),
 				tables: ranges('table'),
 				comments: ranges('comment'),
 			};

@@ -37,6 +37,12 @@
 			"original": "![[percent-block-ignored.png]]"
 		}
 	],
+	"links": [
+		{
+			"offset": 928,
+			"original": "[[escaped-should-be-ignored.png]]"
+		}
+	],
 	"sections": [
 		{
 			"type": "yaml",

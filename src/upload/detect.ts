@@ -1,7 +1,7 @@
-// Finds image embeds in a note independently of Obsidian's metadataCache (design 8-2), so the cache can be
+// Finds embeds and links in a note independently of Obsidian's metadataCache (design 8-2), so the cache can be
 // checked against the current text (8-3). Block structure is classified first (front matter, fences, indented
 // code, math blocks, HTML blocks, tables), then the remaining text is scanned once from left to right for
-// inline code, inline math, %% comments, HTML comments, escapes and embeds. Anything it cannot decide is a
+// inline code, inline math, %% comments, HTML comments, escapes, embeds and links. Anything it cannot decide is a
 // problem: the caller aborts instead of guessing.
 
 export interface FoundEmbed {
@@ -19,8 +19,23 @@ export interface FoundEmbed {
 	inNestedTable: boolean;
 }
 
-export type ParseProblem = 'lone-cr' | 'unclosed-percent' | 'unclosed-html-comment' | 'comment-spans-block';
-export type ParsedNote = { ok: true; embeds: FoundEmbed[] } | { ok: false; problem: ParseProblem; offset: number };
+export type ParseProblem =
+	| 'lone-cr'
+	| 'unclosed-percent'
+	| 'unclosed-html-comment'
+	| 'comment-spans-block'
+	/** Design 5-2 (D19): whether the cache ends a comment at a %% inside inline code is not known. */
+	| 'percent-in-code-in-comment';
+
+export interface ParsedLinks {
+	embeds: FoundEmbed[];
+	/** `[[p]]` and `[t](p)`, as the cache's `links` (design 5-1). */
+	links: FoundEmbed[];
+	/** Offsets of reference-style links `[t][id]` and definitions `[id]: p`, which the cache does not report (5-3). */
+	references: number[];
+}
+
+export type ParsedNote = ({ ok: true } & ParsedLinks) | { ok: false; problem: ParseProblem; offset: number };
 
 interface Line {
 	start: number;
@@ -263,7 +278,24 @@ export function parseEmbeds(text: string): ParsedNote {
 		return false;
 	};
 
+	/** Backtick run length at p and the start of its closing run within the paragraph (-1 if none). */
+	const codeSpan = (p: number): [number, number] => {
+		let n = 1;
+		while (text[p + n] === '`') n++;
+		const run = '`'.repeat(n);
+		const end = runEnd(p);
+		let q = text.indexOf(run, p + n);
+		while (q >= 0 && q < end && text[q + n] === '`') {
+			let k = q;
+			while (text[k] === '`') k++;
+			q = text.indexOf(run, k);
+		}
+		return [n, q >= 0 && q < end ? q : -1];
+	};
+
 	const embeds: FoundEmbed[] = [];
+	const links: FoundEmbed[] = [];
+	const references: number[] = [];
 	let inComment = false;
 	let commentStart = 0;
 	let p = 0;
@@ -275,6 +307,13 @@ export function parseEmbeds(text: string): ParsedNote {
 		}
 		const ch = text[p]!;
 		if (inComment) {
+			// 5-2: inline code inside a comment is skipped as outside; a %% inside it has not been measured, so stop.
+			if (ch === '`') {
+				const [n, q] = codeSpan(p);
+				if (q >= 0 && text.slice(p + n, q).includes('%%')) return { ok: false, problem: 'percent-in-code-in-comment', offset: p };
+				p = q >= 0 ? q + n : p + n;
+				continue;
+			}
 			if (text.startsWith('%%', p)) {
 				if (spansBlock(commentStart, p)) return { ok: false, problem: 'comment-spans-block', offset: commentStart };
 				inComment = false;
@@ -287,17 +326,8 @@ export function parseEmbeds(text: string): ParsedNote {
 				continue;
 			}
 			if (ch === '`') {
-				let n = 1;
-				while (text[p + n] === '`') n++;
-				const run = '`'.repeat(n);
-				const end = runEnd(p);
-				let q = text.indexOf(run, p + n);
-				while (q >= 0 && q < end && text[q + n] === '`') {
-					let k = q;
-					while (text[k] === '`') k++;
-					q = text.indexOf(run, k);
-				}
-				p = q >= 0 && q < end ? q + n : p + n;
+				const [n, q] = codeSpan(p);
+				p = q >= 0 ? q + n : p + n;
 				continue;
 			}
 			if (ch === '$' && text[p + 1] !== '$' && !/\s/.test(text[p + 1] ?? ' ')) {
@@ -349,11 +379,46 @@ export function parseEmbeds(text: string): ParsedNote {
 				p += len;
 				continue;
 			}
+		} else if (text.startsWith('[[', p)) {
+			// 5-1: a wiki link runs to the first ]] on its line, as a wiki embed does.
+			const end = text.indexOf(']]', p + 2);
+			const nl = text.indexOf('\n', p);
+			if (end > p + 2 && (nl < 0 || end < nl)) {
+				links.push({ offset: p, original: text.slice(p, end + 2), inComment, ...where(lines[lineAt[p]!]!) });
+				p = end + 2;
+				continue;
+			}
+		} else if (ch === '[') {
+			const len = markdownImageLength(text, p - 1);
+			if (len > 1) {
+				const original = text.slice(p, p - 1 + len);
+				// Links with a scheme are not in the cache's links either (measured).
+				if (!SCHEME.test(linkDestination(original))) links.push({ offset: p, original, inComment, ...where(lines[lineAt[p]!]!) });
+				// Past '[' only: an image in the link text is an embed of its own.
+				p++;
+				continue;
+			}
+			// 5-3: a reference-style link `[t][id]` or a definition `[id]: p` (up to 3 spaces in) is not reported.
+			const rest = text.slice(p, p + 400);
+			const lineStart = text.slice(lines[lineAt[p]!]!.start, p);
+			if (/^\[[^\]\n]+\]\[[^\]\n]*\]/.test(rest) || (/^ {0,3}$/.test(lineStart) && /^\[[^\]\n]+\]:/.test(rest))) references.push(p);
 		}
 		p++;
 	}
 	if (inComment) return { ok: false, problem: 'unclosed-percent', offset: commentStart };
-	return { ok: true, embeds };
+	return { ok: true, embeds, links, references };
+}
+
+/** The destination of `[text](dest)`, after the bracket that closes the text (the text may hold an image). */
+function linkDestination(link: string): string {
+	let depth = 0;
+	for (let i = 0; i < link.length; i++) {
+		const c = link[i];
+		if (c === '\\') i++;
+		else if (c === '[') depth++;
+		else if (c === ']' && --depth === 0) return link.slice(i + 2).replace(/^</, '');
+	}
+	return '';
 }
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -409,19 +474,27 @@ export function markdownImageLength(text: string, p: number): number {
 
 export interface CacheView {
 	embeds: readonly { offset: number; original: string }[];
+	/** The cache's `links` (design 5-4): notes and headings included, front matter not. */
+	links: readonly { offset: number; original: string }[];
 	/** Line ranges (inclusive) of the cache's `table` sections. */
 	tables: readonly { startLine: number; endLine: number }[];
 	/** Line ranges (inclusive) of the cache's `comment` sections (%% blocks). */
 	comments?: readonly { startLine: number; endLine: number }[];
 }
 
+export interface Found {
+	kind: 'embed' | 'link';
+	offset: number;
+	original: string;
+}
+
 export interface Mismatch {
-	onlyOwn: { offset: number; original: string }[];
-	onlyCache: { offset: number; original: string }[];
-	/** Same embed, but the parser and the cache disagree on whether it is in a table. */
-	table: { offset: number; original: string }[];
+	onlyOwn: Found[];
+	onlyCache: Found[];
+	/** Same embed or link, but the parser and the cache disagree on whether it is in a table. */
+	table: Found[];
 	/** In a cache comment section, but not in a %% comment for the parser. */
-	comment: { offset: number; original: string }[];
+	comment: Found[];
 }
 
 /** Line number (0-based) of an offset; CRLF and LF both count one line break. */
@@ -431,28 +504,37 @@ export function lineOf(text: string, offset: number): number {
 	return n;
 }
 
-/** The set of (offset, original), and table membership of each, must agree exactly. */
-export function compareWithCache(text: string, own: readonly FoundEmbed[], cache: CacheView): Mismatch | undefined {
-	const key = (e: { offset: number; original: string }) => `${e.offset}:${e.original}`;
-	const ownKeys = new Set(own.map(key));
-	const cacheKeys = new Set(cache.embeds.map(key));
-	const onlyOwn = own.filter((e) => !cacheKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
-	const onlyCache = cache.embeds.filter((e) => !ownKeys.has(key(e))).map(({ offset, original }) => ({ offset, original }));
-	const table = own
-		.filter((e) => cacheKeys.has(key(e)) && !e.inNestedTable)
-		.filter((e) => {
+/**
+ * I11 and design 5-4: the embeds and the links, each as a set of (offset, original) and a count, and the table
+ * membership of each, must agree exactly. An embed never matches a link.
+ */
+export function compareWithCache(text: string, own: Pick<ParsedLinks, 'embeds' | 'links'>, cache: CacheView): Mismatch | undefined {
+	const mine = [...own.embeds.map((e) => ({ kind: 'embed' as const, e })), ...own.links.map((e) => ({ kind: 'link' as const, e }))];
+	const theirs: Found[] = [
+		...cache.embeds.map(({ offset, original }) => ({ kind: 'embed' as const, offset, original })),
+		...cache.links.map(({ offset, original }) => ({ kind: 'link' as const, offset, original })),
+	];
+	const key = (f: Found) => `${f.kind}:${f.offset}:${f.original}`;
+	const found = (kind: Found['kind'], e: FoundEmbed): Found => ({ kind, offset: e.offset, original: e.original });
+	const ownKeys = new Set(mine.map(({ kind, e }) => key(found(kind, e))));
+	const cacheKeys = new Set(theirs.map(key));
+	const onlyOwn = mine.map(({ kind, e }) => found(kind, e)).filter((f) => !cacheKeys.has(key(f)));
+	const onlyCache = theirs.filter((f) => !ownKeys.has(key(f)));
+	const table = mine
+		.filter(({ kind, e }) => cacheKeys.has(key(found(kind, e))) && !e.inNestedTable)
+		.filter(({ e }) => {
 			const line = lineOf(text, e.offset);
 			return e.inTable !== cache.tables.some((t) => line >= t.startLine && line <= t.endLine);
 		})
-		.map(({ offset, original }) => ({ offset, original }));
-	const comment = own
-		.filter((e) => !e.inComment)
-		.filter((e) => {
+		.map(({ kind, e }) => found(kind, e));
+	const comment = mine
+		.filter(({ e }) => !e.inComment)
+		.filter(({ e }) => {
 			const line = lineOf(text, e.offset);
 			return (cache.comments ?? []).some((c) => line >= c.startLine && line <= c.endLine);
 		})
-		.map(({ offset, original }) => ({ offset, original }));
-	const counts = own.length === cache.embeds.length;
+		.map(({ kind, e }) => found(kind, e));
+	const counts = own.embeds.length === cache.embeds.length && own.links.length === cache.links.length;
 	return onlyOwn.length || onlyCache.length || table.length || comment.length || !counts ? { onlyOwn, onlyCache, table, comment } : undefined;
 }
 
@@ -532,12 +614,12 @@ export interface DetectSource {
 export const CACHE_WAIT_MS = 3000;
 
 export type Detection =
-	| { ok: true; snapshot: string; embeds: FoundEmbed[] }
+	| ({ ok: true; snapshot: string } & ParsedLinks)
 	| { ok: false; reason: 'unparsable'; problem: ParseProblem; offset: number }
 	| { ok: false; reason: 'mismatch'; mismatch: Mismatch }
 	| { ok: false; reason: 'changed' };
 
-const NO_CACHE: CacheView = { embeds: [], tables: [], comments: [] };
+const NO_CACHE: CacheView = { embeds: [], links: [], tables: [], comments: [] };
 
 /**
  * Compares the parser with the cache on the current disk text. On a mismatch it waits for the cache (at most
@@ -550,7 +632,9 @@ export async function detectEmbeds(source: DetectSource): Promise<Detection> {
 	for (;;) {
 		const parsed = parseEmbeds(snapshot);
 		if (!parsed.ok) return { ok: false, reason: 'unparsable', problem: parsed.problem, offset: parsed.offset };
-		if (!compareWithCache(snapshot, parsed.embeds, source.cache() ?? NO_CACHE)) return { ok: true, snapshot, embeds: parsed.embeds };
+		const { embeds, links, references } = parsed;
+		const result = { ok: true as const, snapshot, embeds, links, references };
+		if (!compareWithCache(snapshot, parsed, source.cache() ?? NO_CACHE)) return result;
 		await source.waitForChange(CACHE_WAIT_MS);
 		const again = await source.read();
 		if (again !== snapshot) {
@@ -559,7 +643,7 @@ export async function detectEmbeds(source: DetectSource): Promise<Detection> {
 			snapshot = again;
 			continue;
 		}
-		const mismatch = compareWithCache(snapshot, parsed.embeds, source.cache() ?? NO_CACHE);
-		return mismatch ? { ok: false, reason: 'mismatch', mismatch } : { ok: true, snapshot, embeds: parsed.embeds };
+		const mismatch = compareWithCache(snapshot, parsed, source.cache() ?? NO_CACHE);
+		return mismatch ? { ok: false, reason: 'mismatch', mismatch } : result;
 	}
 }

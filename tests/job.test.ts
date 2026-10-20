@@ -847,7 +847,7 @@ describe('uploadCommand (10-1)', () => {
 			detect: () => {
 				const p = parseEmbeds(note);
 				if (!p.ok) throw new Error();
-				return Promise.resolve({ ok: true, snapshot: note, embeds: p.embeds });
+				return Promise.resolve({ ...p, snapshot: note });
 			},
 			prepare: w.prep,
 			authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
