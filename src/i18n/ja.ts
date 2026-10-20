@@ -191,7 +191,7 @@ export const ja: Record<MessageKey, string> = {
 	'upload.stop.pendingNotReady': 'アップロード記録を読み込めないため、アップロードしません。プラグインの設定で確認してください。',
 	'upload.stop.connectionNotActive': 'この接続は現在使えません。プラグインの設定で確認してください。',
 	'upload.stop.unparsable': 'ノートに安全に読み取れない記法（閉じていないコメントなど）があります。アップロードしていません。',
-	'upload.stop.mismatch': '検出した埋め込み画像が Obsidian の情報と一致しませんでした。少し待ってからやり直してください。',
+	'upload.stop.mismatch': '検出した埋め込み・リンクが Obsidian の情報と一致しませんでした。少し待ってからやり直してください。',
 	'upload.stop.changed': '読み取り中にノートが変更されました。やり直してください。',
 	'upload.stop.template': 'この接続のキーテンプレートが正しくありません。接続の設定で直してください。',
 	'upload.stop.publicUrl': 'この Public 接続へのアップロードには、正しい公開用のベース URL が必要です。',

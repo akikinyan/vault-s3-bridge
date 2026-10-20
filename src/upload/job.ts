@@ -290,7 +290,8 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 			// 5-4: links to notes, headings and notes not written yet are not attachments, and not listed at all.
 			const rough = roughLinkPath(embed.original);
 			const to = rough ? deps.resolveLink(rough) : undefined;
-			if (rough === undefined || rough === '' || (to ? isNoteFile(to.path) : extensionOf(rough) === '' || isNoteFile(rough))) continue;
+			// A path that cannot be decoded goes on to the syntax check, which lists it as unparsable.
+			if (rough !== undefined && (rough === '' || (to ? isNoteFile(to.path) : extensionOf(rough) === '' || isNoteFile(rough)))) continue;
 		}
 		if (embed.inComment) {
 			skip(embed, 'comment');

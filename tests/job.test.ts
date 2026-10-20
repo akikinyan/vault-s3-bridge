@@ -1499,11 +1499,12 @@ describe('links and their Markdown in the job (design 5-4, 6-2, 6-4)', () => {
 
 	it('links to notes, headings and notes not written yet are not listed at all; attachments that cannot be used are', async () => {
 		const w = await on();
-		const p = await plan(w, '[[ノート]] [[ノート.md]] [[#見出し]] [[まだない]] [[board.canvas]] [n](ノート.md) [[doc.pdf#page=2]] [[missing.pdf]] %% [[doc.pdf]] %%');
+		const p = await plan(w, '[[ノート]] [[ノート.md]] [[#見出し]] [[まだない]] [[board.canvas]] [n](ノート.md) [[doc.pdf#page=2]] [[missing.pdf]] [t](%E0%A4%A.pdf) %% [[doc.pdf]] %%');
 		expect(p.groups).toEqual([]);
 		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
 			['[[doc.pdf#page=2]]', 'subpath'],
 			['[[missing.pdf]]', 'not-found'],
+			['[t](%E0%A4%A.pdf)', 'unparsable'],
 			['[[doc.pdf]]', 'comment'],
 		]);
 	});

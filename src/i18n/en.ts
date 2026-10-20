@@ -189,7 +189,7 @@ export const en = {
 	'upload.stop.pendingNotReady': 'Upload records cannot be read, so nothing is uploaded. Check them in the plugin settings.',
 	'upload.stop.connectionNotActive': 'This connection cannot be used now. Check it in the plugin settings.',
 	'upload.stop.unparsable': 'The note contains syntax the plugin cannot read safely (for example an unclosed comment). Nothing was uploaded.',
-	'upload.stop.mismatch': 'The embedded images found did not match what Obsidian reports. Try again in a moment.',
+	'upload.stop.mismatch': 'The embeds and links found did not match what Obsidian reports. Try again in a moment.',
 	'upload.stop.changed': 'The note changed while it was being read. Try again.',
 	'upload.stop.template': 'The key template of this connection is invalid. Fix it in the connection settings.',
 	'upload.stop.publicUrl': 'A valid public base URL is required to upload to this public connection.',
