@@ -15,6 +15,7 @@ import {
 	type JobPlan,
 	prepareJob,
 	type PrepareDeps,
+	rebuiltFormatMatches,
 	type RunDeps,
 	runJob,
 	inExcludedFolder,
@@ -88,6 +89,8 @@ interface World {
 	encoder: FakeEncoder;
 	files: Map<string, Uint8Array>;
 	reads: string[];
+	/** Paths hashed from a stream (design 3-3). */
+	hashed: string[];
 	changed: Set<string>;
 	disk: { text: string | undefined };
 	editors: FakeEditor[];
@@ -126,6 +129,7 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		encoder: new FakeEncoder(),
 		files,
 		reads: [],
+		hashed: [],
 		changed: new Set(),
 		disk: { text: note },
 		editors: [],
@@ -171,6 +175,12 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		authGeneration: (id) => profileOf(settings.device, id)?.generation,
 		sourceChanged: (p) => w.changed.has(p),
 		readSource: (p) => Promise.resolve(w.files.get(p)),
+		hashSource: (p) => {
+			w.hashed.push(p);
+			const b = w.files.get(p);
+			return Promise.resolve(b && sha256Hex(b));
+		},
+		sourceSize: (p) => w.files.get(p)?.length,
 		note: note_,
 		copy: (text) => {
 			if (w.copyFails) return Promise.resolve(false);
@@ -1261,5 +1271,134 @@ describe('copyDelivered (7-4)', () => {
 		await deliveredJob(w, priv, '| x |\n|---|\n| ![[a.png\\|300]] |');
 		await copyDelivered(copyDeps(w), NOTE);
 		expect(w.copied).toEqual(['![a\\|300](s3-bridge://work/k/a.png)']);
+	});
+});
+
+describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
+	const file = (name: string) => new Uint8Array(readFileSync(new URL(`./fixtures/files/${name}`, import.meta.url)));
+	const PDF = file('p-ok.pdf');
+	const MP4 = file('v-mp4.mp4');
+	const other = async (connections?: StorageConnection[]) => {
+		const w = await world(connections);
+		w.prep = { ...w.prep, otherFiles: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/clip.mp4', MP4);
+		w.files.set('img/clip.mov', MP4);
+		w.files.set('img/page.html', file('a-page.html'));
+		w.files.set('img/blob.bin', file('m-random.bin'));
+		return w;
+	};
+
+	it('off (until links and confirmation exist): a PDF is unsupported, as in Phase 3', async () => {
+		const w = await world();
+		w.files.set('img/doc.pdf', PDF);
+		const p = await plan(w, '![[doc.pdf]]');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['unsupported']);
+	});
+
+	it('prepares a PDF without keeping its bytes, outside maxJobMB, with its own Content-Type and extension', async () => {
+		const w = await other();
+		await w.settings.mutate((d) => {
+			d.upload.maxJobMB = (PNG_A.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const p = await plan(w, '![[doc.pdf]] ![[a.png]]');
+		expect(p.groups).toHaveLength(1);
+		expect(p.groups[0]).toMatchObject({ key: 'k/doc.pdf', format: 'pdf', contentType: 'application/pdf', converter: 'c1;orig', sentSha256: sha256Hex(PDF), size: PDF.length, bytes: undefined, reencoded: false });
+		// The image is over the limit and waits for the next run, as before.
+		expect(p.deferred.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
+	});
+
+	it('sends a PDF: every source hashed from a stream, one read before the Put, delivered with its Content-Type', async () => {
+		const w = await other();
+		const p = await plan(w, '![[doc.pdf]]');
+		w.reads.length = 0;
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => f.outcome)).toEqual(['delivered']);
+		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
+		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
+		expect(w.s3.objects.get('k/doc.pdf')).toBe(checksumOf(sha256Hex(PDF)));
+		expect(w.hashed.length).toBeGreaterThan(0);
+		expect(w.pending.items.length + w.settings.current.history.length).toBeGreaterThan(0);
+		expect(w.settings.current.history.at(-1)).toMatchObject({ format: 'pdf', converter: 'c1;orig' });
+	});
+
+	it('equal bytes with different Content-Types are separate groups, each put with its own (3-8)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[clip.mp4]] ![[clip.mov]]');
+		expect(p.groups.map((g) => [g.key, g.contentType])).toEqual([
+			['k/clip.mp4', 'video/mp4'],
+			['k/clip.mov', 'video/quicktime'],
+		]);
+		await runJob(p, confirm(w, priv), w.run);
+		expect(w.s3.types.get('k/clip.mp4')).toBe('video/mp4');
+		expect(w.s3.types.get('k/clip.mov')).toBe('video/quicktime');
+	});
+
+	it('public: an object of the same bytes served as another Content-Type is not reused; nothing unconfirmed is put', async () => {
+		const w = await other();
+		const p = await plan(w, '![[clip.mov]]', pub);
+		const key = p.groups[0]!.key;
+		w.s3.objects.set(key, checksumOf(sha256Hex(MP4)));
+		w.s3.types.set(key, 'video/mp4');
+		const r = await runJob(p, confirm(w, pub), w.run);
+		// delivery-mismatch → the alternate key → 404 → a Put, which I15 refuses without a confirmation.
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['stopped', 'needs-confirmation']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+	});
+
+	it('public: active and ambiguous formats are listed without a key; private sends them as octet-stream', async () => {
+		const w = await other();
+		const p = await plan(w, '![[page.html]] ![[blob.bin]]', pub);
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['active-content', 'ambiguous-format']);
+		expect(JSON.stringify(p.skipped)).not.toContain('cdn.example.com');
+		const q = await plan(w, '![[page.html]] ![[blob.bin]]');
+		expect(q.groups.map((g) => [g.key, g.format, g.contentType])).toEqual([
+			['k/page.html', 'active', 'application/octet-stream'],
+			['k/blob.bin', 'other', 'application/octet-stream'],
+		]);
+	});
+
+	it('the size limit of other files: maxOtherFileMB, checked on what was read', async () => {
+		const w = await other();
+		await w.settings.mutate((d) => {
+			d.upload.maxOtherFileMB = (PDF.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const p = await plan(w, '![[doc.pdf]] ![[a.png]]');
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([['![[doc.pdf]]', 'too-large']]);
+		expect(p.groups.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
+	});
+
+	it('a source changed after preparing is not sent (I3)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[doc.pdf]]');
+		w.files.set('img/doc.pdf', file('p-pdf-late-header.pdf'));
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'changed']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+	});
+
+	it('resumes a PDF: hashed from a stream, read once, put with the recorded Content-Type', async () => {
+		const w = await other();
+		await stoppedJob(w, '![[doc.pdf]]');
+		w.reads.length = 0;
+		await resumeCmd(w).run();
+		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
+		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('rebuiltFormatMatches (3-7): the bytes must still be the recorded format, Content-Type and public use', () => {
+		const rec = { format: 'pdf' as const, contentType: 'application/pdf', sourcePath: 'img/doc.pdf', classification: 'private' as const };
+		expect(rebuiltFormatMatches(PDF, rec)).toBe(true);
+		expect(rebuiltFormatMatches(file('z-plain.zip'), rec)).toBe(false);
+		expect(rebuiltFormatMatches(MP4, { ...rec, format: 'video', contentType: 'video/quicktime', sourcePath: 'img/clip.mp4' })).toBe(false);
+		expect(rebuiltFormatMatches(file('a-page.html'), { format: 'active', contentType: 'application/octet-stream', sourcePath: 'img/page.html', classification: 'private' })).toBe(true);
+		expect(rebuiltFormatMatches(file('a-page.html'), { format: 'active', contentType: 'application/octet-stream', sourcePath: 'img/page.html', classification: 'public' })).toBe(false);
+		expect(rebuiltFormatMatches(PNG_A, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(true);
+		expect(rebuiltFormatMatches(PDF, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(false);
 	});
 });

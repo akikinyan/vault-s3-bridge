@@ -9,14 +9,15 @@ import type { SettingsStore, StoreChange } from '../settings/store';
 import type { PluginSettings, StorageConnection, UploadFormat } from '../settings/types';
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
-import { type Encoder, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
-import { type ImageFormat, imageContentType, publicUseOf } from './fileType';
+import { type Encoder, ORIGINAL_CONVERTER, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
+import { detectImage } from '../preview/imageInfo';
+import { classifyFile, extensionOf, imageContentType, isImageFormat, publicUseOf } from './fileType';
 import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
 import { compareHead, headCommand } from './s3';
 import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, type Target, verifyMarkdown } from './rewrite';
-import { type ItemResult, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
+import { type ItemResult, type RebuildRefusal, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
 
 const MB = 1024 * 1024;
@@ -53,6 +54,10 @@ export type SkipReason =
 	| 'read-failed'
 	| PrepareRejection
 	| 'private-recorded'
+	/** Design 3-1: a format public storage never serves (I14 (a), (b)). */
+	| 'active-content'
+	/** Design 3-1: a format that cannot be told apart for public storage (I14 (c)). */
+	| 'ambiguous-format'
 	| 'key-error'
 	| 'markdown-check';
 
@@ -102,8 +107,9 @@ export interface PlannedGroup {
 	/** The fixed Content-Type every file of the group is put with (fileType.ts). */
 	contentType: string;
 	converter: string;
-	bytes: Uint8Array;
-	/** Bytes sent: bytes.length, kept for the screen where the bytes are not held. */
+	/** An image's prepared bytes. Other files keep none: they are read again right before the Put (3-3). */
+	bytes: Uint8Array | undefined;
+	/** Bytes sent: kept for the screen where the bytes are not held. */
 	size: number;
 	reencoded: boolean;
 	files: PlannedFile[];
@@ -144,6 +150,11 @@ export interface PrepareDeps {
 	/** metadataCache.getFirstLinkpathDest from the note; undefined unless it is a file in the vault. */
 	resolveLink(linkpath: string): SourceFile | undefined;
 	encoder: Encoder;
+	/**
+	 * Design 3-1 step 3: prepare files other than PNG, JPEG, WebP and GIF. Off until their links (6) and the public
+	 * confirmation (4) exist; when off they are 'unsupported' as in Phase 3.
+	 */
+	otherFiles?: boolean;
 	now(): Date;
 	newId(): string;
 }
@@ -184,11 +195,14 @@ function linkpathOf(syntax: EmbedSyntax): string | undefined {
 interface Prepared {
 	file: SourceFile;
 	sourceSha256: string;
-	/** Undefined once the file is over maxJobMB: only what the screen shows is kept. */
+	/** An image's bytes while within maxJobMB; never kept for other files (3-1 step 3). */
 	bytes: Uint8Array | undefined;
+	/** An image over maxJobMB: shown, and left for the next run. */
+	deferred: boolean;
 	size: number;
 	sentSha256: string;
-	format: ImageFormat;
+	format: UploadFormat;
+	contentType: string;
 	converter: string;
 	reencoded: boolean;
 	preparedKey: string;
@@ -242,30 +256,37 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 			else known.occurrences.push({ embed, syntax: parsed.value });
 			continue;
 		}
-		const r = await prepareFile(file, target, input, privateFiles, date, deps.encoder);
+		const r = await prepareFile(file, target, input, privateFiles, date, deps);
 		if ('skip' in r) {
 			byPath.set(file.path, r);
 			skip(embed, r.skip, r.detail);
 			continue;
 		}
-		// maxJobMB counts each sentSha256 once, in the order the files appear. Equal bytes share the first copy;
-		// once the limit is exceeded, new bytes are dropped right away and the rest waits for the next run.
+		if (!r.bytes) {
+			// Design 3-1 step 4: other files hold no bytes, so maxJobMB does not count them and they are never deferred.
+			const p: Prepared = { ...r, bytes: undefined, deferred: false, occurrences: [{ embed, syntax: parsed.value }] };
+			byPath.set(file.path, p);
+			order.push(p);
+			continue;
+		}
+		// maxJobMB counts each image's sentSha256 once, in the order the files appear. Equal bytes share the first
+		// copy; once the limit is exceeded, new bytes are dropped right away and the rest waits for the next run.
 		let bytes: Uint8Array | undefined = held.get(r.sentSha256);
 		if (!bytes && !held.has(r.sentSha256) && !over && total + r.bytes.length <= upload.maxJobMB * MB) {
 			total += r.bytes.length;
 			bytes = r.bytes;
 		} else if (!bytes) over = true;
 		held.set(r.sentSha256, bytes);
-		const p: Prepared = { ...r, bytes, size: r.bytes.length, occurrences: [{ embed, syntax: parsed.value }] };
+		const p: Prepared = { ...r, bytes, deferred: !bytes, occurrences: [{ embed, syntax: parsed.value }] };
 		byPath.set(file.path, p);
 		order.push(p);
 	}
 
-	// 6-0: one group per sentSha256, in the order the files first appear in the note.
+	// 6-0 and design 3-8: one group per (sentSha256, contentType), in the order the files first appear in the note.
 	const rt = rewriteTarget(target);
-	const groups: (DeferredGroup & { bytes: Uint8Array | undefined })[] = [];
+	const groups: (PlannedGroup & { deferred: boolean })[] = [];
 	for (const p of order) {
-		let g = groups.find((x) => x.sentSha256 === p.sentSha256);
+		let g = groups.find((x) => x.sentSha256 === p.sentSha256 && x.contentType === p.contentType);
 		if (!g) {
 			const candidate = latestHistory(input.settings, target.target, p.sentSha256);
 			g = {
@@ -275,9 +296,10 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 				phase: candidate ? 'candidate' : 'prepared',
 				sentSha256: p.sentSha256,
 				format: p.format,
-				contentType: imageContentType(p.format),
+				contentType: p.contentType,
 				converter: p.converter,
 				bytes: p.bytes,
+				deferred: p.deferred,
 				size: p.size,
 				reencoded: p.reencoded,
 				files: [],
@@ -300,8 +322,8 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 
 	const sending: PlannedGroup[] = [];
 	const deferred: DeferredGroup[] = [];
-	for (const { bytes, ...g } of groups.filter((x) => x.files.length > 0)) {
-		if (bytes) sending.push({ ...g, bytes });
+	for (const { deferred: later, bytes, ...g } of groups.filter((x) => x.files.length > 0)) {
+		if (!later) sending.push({ ...g, bytes });
 		else deferred.push(g);
 	}
 	skipped.sort((a, b) => a.offset - b.offset);
@@ -314,19 +336,22 @@ async function prepareFile(
 	input: PrepareInput,
 	privateFiles: ReadonlySet<string>,
 	date: Date,
-	encoder: Encoder,
-): Promise<Omit<Prepared, 'occurrences' | 'bytes' | 'size'> & { bytes: Uint8Array } | { skip: SkipReason; detail?: string }> {
+	deps: Pick<PrepareDeps, 'encoder' | 'otherFiles'>,
+): Promise<Omit<Prepared, 'occurrences' | 'deferred'> | { skip: SkipReason; detail?: string }> {
 	const upload = input.settings.upload;
-	// The size is known without reading: a large file is not read whole.
-	if (file.size > upload.maxFileMB * MB) return { skip: 'too-large' };
+	const other = deps.otherFiles === true;
+	// The size is known without reading: a large file is not read whole. Each format's own limit follows (3-1 step 1).
+	if (file.size > (other ? Math.max(upload.maxFileMB, upload.maxOtherFileMB) : upload.maxFileMB) * MB) return { skip: 'too-large' };
 	let source: Uint8Array;
 	try {
 		source = await file.read();
 	} catch {
 		return { skip: 'read-failed' };
 	}
+	// 3-1 step 2: image bytes take Phase 3's path whatever the extension; classifyFile is never asked about them.
+	if (other && detectImage(source).kind !== 'image') return prepareOther(file, source, target, input, privateFiles, date);
 	const policy = { classification: target.classification, stripPrivate: upload.stripPrivate, webp: { ...upload.webp }, maxFileMB: upload.maxFileMB };
-	const prepared = await prepareBytes(source, policy, encoder);
+	const prepared = await prepareBytes(source, policy, deps.encoder);
 	if (!prepared.ok) return { skip: prepared.reason, ...(prepared.detail === undefined ? {} : { detail: prepared.detail }) };
 	const sourceSha256 = sha256Hex(source);
 	// Shown before confirming; the checkpoint before every request decides (I2).
@@ -337,10 +362,43 @@ async function prepareFile(
 		file,
 		sourceSha256,
 		bytes: prepared.bytes,
+		size: prepared.bytes.length,
 		sentSha256: prepared.sentSha256,
 		format: prepared.format,
+		contentType: imageContentType(prepared.format),
 		converter: prepared.converter,
 		reencoded: prepared.reencoded,
+		preparedKey: key.key,
+	};
+}
+
+/** Design 3-1 step 3: a file sent as it is, classified by its bytes. Its bytes are dropped once hashed. */
+function prepareOther(
+	file: SourceFile,
+	source: Uint8Array,
+	target: JobTarget,
+	input: PrepareInput,
+	privateFiles: ReadonlySet<string>,
+	date: Date,
+): Omit<Prepared, 'occurrences' | 'deferred'> | { skip: SkipReason; detail?: string } {
+	// What was read decides, not the size the vault reported.
+	if (source.length > input.settings.upload.maxOtherFileMB * MB) return { skip: 'too-large' };
+	const sourceSha256 = sha256Hex(source);
+	const verdict = classifyFile(source, extensionOf(file.path));
+	if (target.classification === 'public' && verdict.publicUse === 'reject') return { skip: verdict.kind === 'ambiguous' ? 'ambiguous-format' : 'active-content' };
+	if (target.classification === 'public' && privateFiles.has(sourceSha256)) return { skip: 'private-recorded' };
+	const key = buildKey(target.keyTemplate, { date, sourcePath: file.path, notePath: input.notePath, format: verdict.format, sentSha256: sourceSha256 });
+	if (!key.ok) return { skip: 'key-error', detail: key.reason };
+	return {
+		file,
+		sourceSha256,
+		bytes: undefined,
+		size: source.length,
+		sentSha256: sourceSha256,
+		format: verdict.format,
+		contentType: verdict.contentType,
+		converter: ORIGINAL_CONVERTER,
+		reencoded: false,
 		preparedKey: key.key,
 	};
 }
@@ -384,6 +442,13 @@ export interface RunDeps {
 	/** 10-2: the vault reported a modify, delete or rename of this path since preparing. */
 	sourceChanged(path: string): boolean;
 	readSource(path: string): Promise<Uint8Array | undefined>;
+	/**
+	 * Design 3-3: SHA-256 of a source computed from a stream, never holding the whole file; undefined if it cannot
+	 * be read. Used for files other than images, which may be large.
+	 */
+	hashSource(path: string): Promise<string | undefined>;
+	/** Size of a source as the vault reports it, read before reading the file whole; undefined if it is gone. */
+	sourceSize(path: string): number | undefined;
 	note: NoteAccess;
 	copy(text: string): Promise<boolean>;
 	sleep: UploaderDeps['sleep'];
@@ -500,12 +565,54 @@ function watchAbort(settings: Pick<SettingsStore, 'subscribe' | 'current'>, stop
 	};
 }
 
-async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signal: AbortSignal): Promise<FileResult[]> {
-	const sourceUnchanged = async (path: string, sha: string) => {
-		if (deps.sourceChanged(path)) return false;
+type SourceDeps = Pick<RunDeps, 'settings' | 'sourceChanged' | 'readSource' | 'hashSource' | 'sourceSize'>;
+
+/** 10-2: the source still has the hash it had when prepared. Other files are hashed from a stream (3-3). */
+async function sourceUnchanged(deps: SourceDeps, item: Pick<PendingItem, 'sourcePath' | 'sourceSha256' | 'format'>): Promise<boolean> {
+	const path = item.sourcePath;
+	if (deps.sourceChanged(path)) return false;
+	let sha: string | undefined;
+	if (isImageFormat(item.format)) {
 		const bytes = await deps.readSource(path);
-		return bytes !== undefined && !deps.sourceChanged(path) && sha256Hex(bytes) === sha;
-	};
+		sha = bytes && sha256Hex(bytes);
+	} else sha = await deps.hashSource(path);
+	return sha !== undefined && !deps.sourceChanged(path) && sha === item.sourceSha256;
+}
+
+/**
+ * Design 3-7: bytes made again are sent only as the recorded format, served as recorded and, in public storage,
+ * as a format that may be public there.
+ */
+export function rebuiltFormatMatches(bytes: Uint8Array, item: Pick<PendingItem, 'format' | 'contentType' | 'sourcePath' | 'classification'>): boolean {
+	if (isImageFormat(item.format)) {
+		const info = detectImage(bytes);
+		return info.kind === 'image' && info.format === item.format;
+	}
+	const v = classifyFile(bytes, extensionOf(item.sourcePath));
+	return v.format === item.format && v.contentType === item.contentType && (item.classification !== 'public' || v.publicUse !== 'reject');
+}
+
+/**
+ * Design 3-3: the bytes of a group of other files. Every source must still hash as prepared (from a stream); then
+ * only the first is read whole, and sent if it is the recorded bytes and format.
+ */
+async function rebuildOther(deps: SourceDeps, items: readonly DeepReadonly<PendingItem>[]): Promise<Uint8Array | RebuildRefusal | undefined> {
+	for (const i of items) if (!(await sourceUnchanged(deps, i))) return undefined;
+	const first = items[0];
+	if (!first) return undefined;
+	const limit = deps.settings.current.upload.maxOtherFileMB * MB;
+	// Replaced since it was hashed: a large file is not read whole (3-1 step 1).
+	const size = deps.sourceSize(first.sourcePath);
+	if (size === undefined || deps.sourceChanged(first.sourcePath)) return undefined;
+	if (size > limit) return 'too-large';
+	const bytes = await deps.readSource(first.sourcePath);
+	if (!bytes || deps.sourceChanged(first.sourcePath)) return undefined;
+	if (bytes.length > limit) return 'too-large';
+	if (sha256Hex(bytes) !== first.sentSha256) return undefined;
+	return rebuiltFormatMatches(bytes, first) ? bytes : 'format-changed';
+}
+
+async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signal: AbortSignal): Promise<FileResult[]> {
 	const results: FileResult[] = [];
 	let notStarted: string | undefined;
 	for (const group of plan.groups) {
@@ -532,12 +639,15 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 			signal,
 			timeoutMs: deps.timeoutMs,
 			check: jobCheck(deps, plan.target.connectionId, confirmed),
-			sourceUnchanged: (item: DeepReadonly<PendingItem>) => sourceUnchanged(item.sourcePath, item.sourceSha256),
+			sourceUnchanged: (item: DeepReadonly<PendingItem>) => sourceUnchanged(deps, item),
 			sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
-			// Within the job the prepared bytes are the recorded ones, as long as every source is unchanged.
+			// Within the job an image's prepared bytes are the recorded ones, as long as every source is unchanged.
+			// Other files are read again right before the first Put (3-3).
 			rebuild: async (items) => {
-				for (const i of items) if (!(await sourceUnchanged(i.sourcePath, i.sourceSha256))) return undefined;
-				return group.bytes;
+				const bytes = group.bytes;
+				if (!bytes) return rebuildOther(deps, items);
+				for (const i of items) if (!(await sourceUnchanged(deps, i))) return undefined;
+				return bytes;
 			},
 			sleep: deps.sleep,
 			random: () => deps.random(),
@@ -592,11 +702,7 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 	const changed: FileResult[] = [];
 	for (const r of ready) {
 		const e = files.get(r.itemId)!;
-		if (deps.sourceChanged(e.f.sourcePath)) changed.push(r);
-		else {
-			const bytes = await deps.readSource(e.f.sourcePath);
-			if (bytes === undefined || sha256Hex(bytes) !== e.f.sourceSha256) changed.push(r);
-		}
+		if (!(await sourceUnchanged(deps, { sourcePath: e.f.sourcePath, sourceSha256: e.f.sourceSha256, format: e.g.format }))) changed.push(r);
 	}
 	await unlink(deps, changed, 'changed');
 	ready = ready.filter((r) => !changed.includes(r));
@@ -817,7 +923,8 @@ export function resumeTargets(items: DeepReadonly<PendingItem[]>, settings: Deep
 	return { ready: [...ready.values()], mismatched };
 }
 
-export interface ResumeDeps extends Pick<RunDeps, 'settings' | 'pending' | 'client' | 'timeoutMs' | 'signal' | 'authGeneration' | 'sourceChanged' | 'readSource' | 'sleep' | 'random' | 'now' | 'newId'> {
+export interface ResumeDeps
+	extends Pick<RunDeps, 'settings' | 'pending' | 'client' | 'timeoutMs' | 'signal' | 'authGeneration' | 'sourceChanged' | 'readSource' | 'hashSource' | 'sourceSize' | 'sleep' | 'random' | 'now' | 'newId'> {
 	encoder: Encoder;
 }
 
@@ -864,14 +971,17 @@ export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed,
 				signal: watch.signal,
 				timeoutMs: deps.timeoutMs,
 				check: jobCheck(deps, id, confirmed),
-				sourceUnchanged: async (item) => (await sourceBytes(item.sourcePath, item.sourceSha256)) !== undefined,
+				sourceUnchanged: (item) => sourceUnchanged(deps, item),
 				sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
 				rebuild: async (items) => {
+					if (!items.every((i) => isImageFormat(i.format))) return rebuildOther(deps, items);
 					let out: Uint8Array | undefined;
 					for (const item of items) {
 						const source = await sourceBytes(item.sourcePath, item.sourceSha256);
 						const bytes = source && (await rebuildBytes(source, item, deps.encoder));
 						if (!bytes) return undefined;
+						// Design 3-7: rebuildBytes checks the hash and the method, not what the bytes are.
+						if (!rebuiltFormatMatches(bytes, item)) return 'format-changed';
 						out ??= bytes;
 					}
 					return out;

@@ -980,3 +980,75 @@ describe('delivery form of public objects (I14, design 3-4 and 3-5)', () => {
 		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', putSent: true, uncertain: false });
 	});
 });
+
+describe('sendGroup — files other than images (design 3-3, 3-5, 3-7)', () => {
+	const pdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		item(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'k/a.pdf', preparedKey: 'k/a.pdf', ...over });
+
+	it('reads the bytes right before the first Put and keeps them for the recovery in the same group', async () => {
+		const s = await setup();
+		let rebuilds = 0;
+		let checks = 0;
+		const deps: UploaderDeps = {
+			...s.deps,
+			rebuild: () => {
+				rebuilds++;
+				return Promise.resolve(BODY);
+			},
+			sourceUnchanged: () => {
+				checks++;
+				return Promise.resolve(true);
+			},
+		};
+		s.s3.on('put', () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' })));
+		expect(await sendGroup([pdf('a')], undefined, deps)).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.pdf' }]);
+		// Put (unknown) → recover-check Head 404 → resend-check → Put again with the held bytes.
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf', 'put:k/a.pdf', 'head:k/a.pdf', 'put:k/a.pdf']);
+		expect(rebuilds).toBe(1);
+		// Before the first Put (send mode) and before the re-send: the sources are still checked.
+		expect(checks).toBeGreaterThanOrEqual(2);
+		expect(s.s3.types.get('k/a.pdf')).toBe('application/pdf');
+	});
+
+	it('a source changed before the re-send of the held bytes: unresolved, no second Put', async () => {
+		const s = await setup();
+		let putDone = false;
+		const deps: UploaderDeps = { ...s.deps, sourceUnchanged: () => Promise.resolve(!putDone) };
+		s.s3.on('put', () => {
+			putDone = true;
+			return Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		});
+		expect(await sendGroup([pdf('a')], undefined, deps)).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'cannot-rebuild' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf', 'put:k/a.pdf', 'head:k/a.pdf']);
+	});
+
+	it('bytes that are no longer the recorded format are not sent: unresolved', async () => {
+		const s = await setup();
+		const r = await sendGroup([pdf('a')], undefined, { ...s.deps, rebuild: () => Promise.resolve('format-changed' as const) });
+		expect(r).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'format-changed' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf']);
+	});
+
+	it('public: an item whose format needs confirming is never put unconfirmed (I15), but may be reused', async () => {
+		const s = await setup();
+		expect(await sendGroup([pubItem('x', { format: 'pdf', contentType: 'application/pdf', key: 'p/x.pdf', preparedKey: 'p/x.pdf' })], undefined, s.deps)).toEqual([
+			{ id: 'x', outcome: 'stopped', reason: 'needs-confirmation' },
+		]);
+		expect(s.s3.ops()).toEqual(['head:p/x.pdf']);
+
+		const t = await setup();
+		t.s3.objects.set('p/y.pdf', checksumOf(SENT));
+		t.s3.types.set('p/y.pdf', 'application/pdf');
+		expect(await sendGroup([pubItem('y', { format: 'pdf', contentType: 'application/pdf', key: 'p/y.pdf', preparedKey: 'p/y.pdf' })], undefined, t.deps)).toEqual([
+			{ id: 'y', outcome: 'delivered', key: 'p/y.pdf' },
+		]);
+		expect(t.s3.ops()).toEqual(['head:p/y.pdf']);
+
+		const u = await setup();
+		const confirmed = { ...u.deps, isConfirmed: () => true };
+		expect(await sendGroup([pubItem('z', { format: 'pdf', contentType: 'application/pdf', key: 'p/z.pdf', preparedKey: 'p/z.pdf' })], undefined, confirmed)).toEqual([
+			{ id: 'z', outcome: 'delivered', key: 'p/z.pdf' },
+		]);
+		expect(u.s3.types.get('p/z.pdf')).toBe('application/pdf');
+	});
+});

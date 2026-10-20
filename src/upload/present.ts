@@ -144,6 +144,9 @@ const REASON_KEY: Record<string, MessageKey> = {
 	'different-delivery': 'upload.reason.different-delivery',
 	'delivery-unchecked': 'upload.reason.delivery-unchecked',
 	'public-format': 'upload.reason.public-format',
+	'format-changed': 'upload.reason.format-changed',
+	'too-large': 'upload.reason.too-large',
+	'needs-confirmation': 'upload.reason.needs-confirmation',
 };
 
 const ABORT_KEY: Record<NonNullable<JobResult['aborted']>, MessageKey> = {

@@ -55,16 +55,29 @@ export interface UploaderDeps {
 	sourceUnchanged(item: DeepReadonly<PendingItem>): Promise<boolean>;
 	/** 10-2: the vault reported a change of the source since preparing. Asked synchronously as a Put starts. */
 	sourceChanged(item: DeepReadonly<PendingItem>): boolean;
-	/** 6-5 step 2: rebuild the bytes to re-send, or undefined if the source, converter or sentSha256 differ. */
-	rebuild(items: readonly DeepReadonly<PendingItem>[]): Promise<Uint8Array | undefined>;
+	/**
+	 * 6-5 step 2 and design 3-3: the bytes to send, made again from the sources. Undefined ('cannot-rebuild') if a
+	 * source, the converter or sentSha256 differ; a refusal names a check of design 3-7 or 3-3 that failed.
+	 */
+	rebuild(items: readonly DeepReadonly<PendingItem>[]): Promise<Uint8Array | RebuildRefusal | undefined>;
+	/**
+	 * Design 4-1: the user confirmed this public item for these bytes. Without it no Put carries an item whose
+	 * format needs confirming (I15); Heads are not affected.
+	 */
+	isConfirmed?(item: DeepReadonly<PendingItem>): boolean;
 	sleep(ms: number, signal: AbortSignal): Promise<void>;
 	random(): number;
 	now(): Date;
 	newId(): string;
 }
 
+/** Design 3-7: the rebuilt bytes are not the recorded format; 3-3: the source is over the limit when read. */
+export type RebuildRefusal = 'format-changed' | 'too-large';
+
 /** Refusal reason inside the uploader only: a source changed right before a Put. */
 const SOURCE_CHANGED = 'source-changed';
+
+const REBUILD_FAILURES: ReadonlySet<string> = new Set(['cannot-rebuild', 'format-changed', 'too-large']);
 
 type Started<T> = { started: true; response: Promise<T> } | { started: false; reason: string };
 
@@ -144,6 +157,8 @@ class Group {
 			if (recorded.has(items[0].sentSha256) || this.sources.some((h) => recorded.has(h))) return 'private-recorded';
 			// I14 (a)-(c): a format that may never be public is never put there, whatever led to this Put.
 			if (op === 'put' && items.some((i) => publicUseOf(i.format) === 'reject')) return 'public-format';
+			// I15: a Put carries only items the user confirmed for these bytes (checked here as well as on screen).
+			if (op === 'put' && items.some((i) => publicUseOf(i.format) === 'confirm' && this.deps.isConfirmed?.(i) !== true)) return 'needs-confirmation';
 		}
 		return undefined;
 	}
@@ -218,9 +233,11 @@ class Group {
 	 */
 	private async put(): Promise<{ stopped: string; settled: boolean } | { result: PutResult } | { changed: true }> {
 		if (!this.bytes) {
-			// Resumed group: rebuild the bytes under the conditions of 6-5 step 2.
-			this.bytes = await this.deps.rebuild(this.items());
-			if (!this.bytes) return { stopped: 'cannot-rebuild', settled: false };
+			// A resumed group (6-5 step 2), or other files, whose bytes are read right before the first Put (3-3).
+			// Once made they are kept until the group ends: retries, the alternate key and a recovery reuse them.
+			const rebuilt = await this.deps.rebuild(this.items());
+			if (!(rebuilt instanceof Uint8Array)) return { stopped: rebuilt ?? 'cannot-rebuild', settled: false };
+			this.bytes = rebuilt;
 		}
 		const body = this.bytes;
 		const f = this.first();
@@ -277,7 +294,7 @@ class Group {
 				if ('changed' in r) continue;
 				if ('stopped' in r) {
 					if (r.settled) return;
-					return r.stopped === 'cannot-rebuild' ? this.unresolved(r.stopped) : this.stop(r.stopped);
+					return REBUILD_FAILURES.has(r.stopped) ? this.unresolved(r.stopped) : this.stop(r.stopped);
 				}
 				lastPut = r.result;
 				if (r.result === 'conflict') attempts = { ...attempts, conflict: attempts.conflict + 1 };
@@ -320,9 +337,15 @@ class Group {
 					break;
 				}
 				case 'resend-check': {
-					const bytes = await this.deps.rebuild(this.items());
-					if (!bytes) return this.unresolved('cannot-rebuild');
-					this.bytes = bytes;
+					// Design 3-3: a recovery within this group sends the bytes it already holds, if no source changed.
+					if (this.bytes) {
+						for (const item of this.items()) if (!(await this.deps.sourceUnchanged(item))) return this.unresolved('cannot-rebuild');
+						stage = 'put';
+						break;
+					}
+					const rebuilt = await this.deps.rebuild(this.items());
+					if (!(rebuilt instanceof Uint8Array)) return this.unresolved(rebuilt ?? 'cannot-rebuild');
+					this.bytes = rebuilt;
 					stage = 'put';
 					break;
 				}
@@ -421,7 +444,7 @@ class Group {
  * Sends a new group: records every item first (one write; nothing is sent if it fails), saves I1 for private
  * items, then Heads the candidate key (if the group reuses a key from the history) or the prepared key.
  */
-export async function sendGroup(items: readonly NewPendingItem[], bytes: Uint8Array, deps: UploaderDeps): Promise<ItemResult[]> {
+export async function sendGroup(items: readonly NewPendingItem[], bytes: Uint8Array | undefined, deps: UploaderDeps): Promise<ItemResult[]> {
 	const ids = items.map((i) => i.id);
 	if (!(await deps.pending.add(items)).ok) return ids.map((id) => ({ id, outcome: 'not-recorded' as const }));
 	const group = new Group(deps, ids, 'send', bytes);

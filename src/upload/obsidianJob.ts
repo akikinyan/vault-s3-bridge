@@ -1,6 +1,8 @@
 // What the upload job needs from Obsidian (design 8-1, 8-4, 9-2, 10-2, 4-3) and from AWS, built for one note.
 // Kept apart from job.ts so the job itself runs without Obsidian.
-import { type App, type EventRef, MarkdownView, type TFile } from 'obsidian';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { type App, type EventRef, FileSystemAdapter, MarkdownView, type TFile } from 'obsidian';
 import { profileOf } from '../settings/device';
 import type { SettingsStore } from '../settings/store';
 import type { StorageConnection } from '../settings/types';
@@ -209,6 +211,8 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 					authGeneration,
 					sourceChanged: (path) => watch.changed(path),
 					readSource: (path) => readVaultFile(app, path),
+					hashSource: (path) => hashVaultFile(app, path),
+					sourceSize: (path) => app.vault.getFileByPath(path)?.stat.size,
 					note,
 					copy: copyToClipboard,
 					sleep: abortableSleep,
@@ -244,6 +248,20 @@ async function readVaultFile(app: App, path: string): Promise<Uint8Array | undef
 	return f ? new Uint8Array(await app.vault.readBinary(f)) : undefined;
 }
 
+/** Design 3-3: SHA-256 of a vault file from a stream, so a large file is never held whole. */
+function hashVaultFile(app: App, path: string): Promise<string | undefined> {
+	const adapter = app.vault.adapter;
+	// Without a file system path the hash cannot be streamed: treated as changed, so nothing is sent.
+	if (!(adapter instanceof FileSystemAdapter) || !app.vault.getFileByPath(path)) return Promise.resolve(undefined);
+	return new Promise((resolve) => {
+		const hash = createHash('sha256');
+		createReadStream(adapter.getFullPath(path))
+			.on('data', (chunk) => hash.update(chunk))
+			.on('error', () => resolve(undefined))
+			.on('end', () => resolve(hash.digest('hex')));
+	});
+}
+
 export interface ResumeUi {
 	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
 	stop: AbortSignal;
@@ -272,6 +290,8 @@ export function resumeCommandDeps(host: UploadHost, pending: PendingStore, ui: R
 					authGeneration,
 					sourceChanged: (path) => watch.changed(path),
 					readSource: (path) => readVaultFile(app, path),
+					hashSource: (path) => hashVaultFile(app, path),
+					sourceSize: (path) => app.vault.getFileByPath(path)?.stat.size,
 					encoder: canvasEncoder,
 					sleep: abortableSleep,
 					random: () => Math.random(),
