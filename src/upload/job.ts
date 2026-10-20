@@ -12,11 +12,11 @@ import type { DeepReadonly } from '../util/deepReadonly';
 import { type Encoder, ORIGINAL_CONVERTER, type PrepareRejection, prepareBytes, rebuildBytes, sha256Hex } from './convert';
 import { detectImage } from '../preview/imageInfo';
 import { classifyFile, extensionOf, imageContentType, isImageFormat, publicUseOf } from './fileType';
-import { type Detection, type EmbedSyntax, type FoundEmbed, parseEmbedSyntax, type SyntaxRejection } from './detect';
+import { type Detection, type EmbedSyntax, type FoundEmbed, type LinkSyntax, parseEmbedSyntax, parseLinkSyntax, type SyntaxRejection } from './detect';
 import { buildKey, checkTemplate } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
 import { compareHead, headCommand } from './s3';
-import { altFor, applyToNote, type ApplyResult, buildMarkdown, markdownFor, type NoteAccess, outputShape, type Target, verifyMarkdown } from './rewrite';
+import { applyToNote, type ApplyResult, buildReference, markdownFor, type NoteAccess, outputShape, type ReferenceParts, type ReferenceSource, type Target, verifyMarkdown } from './rewrite';
 import { type ItemResult, type RebuildRefusal, resumeGroup, sendGroup, type UploaderDeps } from './uploader';
 import { validatePublicBaseUrl } from '../settings/validate';
 
@@ -59,7 +59,15 @@ export type SkipReason =
 	/** Design 3-1: a format that cannot be told apart for public storage (I14 (c)). */
 	| 'ambiguous-format'
 	| 'key-error'
-	| 'markdown-check';
+	| 'markdown-check'
+	/** Design 5-4: the file is in the archive folder; it has to be moved back first. */
+	| 'in-archive'
+	/** Design 5-3: a reference-style definition `[id]: p` of an attachment; it is not rewritten (D18). */
+	| 'reference-style'
+	/** Design 6-2: the alt text of `![t](p)` holds Markdown escapes, which a link text would show. */
+	| 'escaped-text'
+	/** A link that holds another embed or link, or is held in one: replacing one would change the other. */
+	| 'overlapping';
 
 export interface SourceFile {
 	path: string;
@@ -82,7 +90,9 @@ export interface PlannedOccurrence {
 	offset: number;
 	original: string;
 	inTable: boolean;
-	syntax: EmbedSyntax;
+	source: ReferenceSource;
+	/** What the record keeps (6-4): the same with any key. */
+	parts: ReferenceParts;
 	/** With the group's key as prepared; rebuilt with the final key before applying. */
 	markdown: string;
 }
@@ -91,6 +101,8 @@ export interface PlannedFile {
 	itemId: string;
 	sourcePath: string;
 	basename: string;
+	/** The name with its extension (6-2: the default text of a link, and of another file's private alt). */
+	fileName: string;
 	sourceSha256: string;
 	sourceSize: number;
 	occurrences: PlannedOccurrence[];
@@ -142,6 +154,10 @@ export interface PrepareInput {
 	notePath: string;
 	snapshot: string;
 	embeds: readonly FoundEmbed[];
+	/** Design 5-4: used only with PrepareDeps.attachments. */
+	links?: readonly FoundEmbed[];
+	/** Offsets of reference-style links and definitions (5-3); used only with PrepareDeps.attachments. */
+	references?: readonly number[];
 	connection: DeepReadonly<StorageConnection>;
 	settings: DeepReadonly<PluginSettings>;
 }
@@ -151,10 +167,10 @@ export interface PrepareDeps {
 	resolveLink(linkpath: string): SourceFile | undefined;
 	encoder: Encoder;
 	/**
-	 * Design 3-1 step 3: prepare files other than PNG, JPEG, WebP and GIF. Off until their links (6) and the public
-	 * confirmation (4) exist; when off they are 'unsupported' as in Phase 3.
+	 * Phase 4: links (5-4) and files other than PNG, JPEG, WebP and GIF (3-1 step 3). Off until the confirmation
+	 * screen (4, 9-2) and the preview (7-1) handle them; when off, only embeds are prepared, as in Phase 3.
 	 */
-	otherFiles?: boolean;
+	attachments?: boolean;
 	now(): Date;
 	newId(): string;
 }
@@ -183,7 +199,7 @@ function rewriteTarget(t: JobTarget): Target {
 }
 
 /** Markdown links are URL-encoded; wiki links are not. */
-function linkpathOf(syntax: EmbedSyntax): string | undefined {
+function linkpathOf(syntax: Pick<EmbedSyntax, 'kind' | 'path'>): string | undefined {
 	if (syntax.kind === 'wiki') return syntax.path;
 	try {
 		return decodeURI(syntax.path);
@@ -206,7 +222,41 @@ interface Prepared {
 	converter: string;
 	reencoded: boolean;
 	preparedKey: string;
-	occurrences: { embed: FoundEmbed; syntax: EmbedSyntax }[];
+	occurrences: { embed: FoundEmbed; source: ReferenceSource }[];
+}
+
+/** Design 8-1: the archive folder, at the root of the vault. */
+export const ARCHIVE_FOLDER = '_s3-archive';
+
+const isNoteFile = (path: string) => ['md', 'canvas'].includes(extensionOf(path));
+
+/** The path a link points to, before its syntax is checked: what decides whether it is a note link (5-4). */
+function roughLinkPath(original: string): string | undefined {
+	let path: string;
+	if (original.startsWith('[[')) path = original.slice(2, -2).split('|')[0]!.replace(/\\$/, '');
+	else {
+		const dest = /\]\((<[^>\n]*>|\S*)/.exec(original.slice(original.lastIndexOf('](')))?.[1] ?? '';
+		try {
+			path = decodeURI(dest.replace(/^<|>$/g, ''));
+		} catch {
+			return undefined;
+		}
+	}
+	return path.split('#')[0]!;
+}
+
+/** Elements whose ranges meet another's (`[![a](a.png)](x.pdf)`): rewriting one would change the other (9-1). */
+function overlapping(elements: readonly FoundEmbed[]): Set<FoundEmbed> {
+	const out = new Set<FoundEmbed>();
+	let holder: FoundEmbed | undefined;
+	for (const e of [...elements].sort((a, b) => a.offset - b.offset)) {
+		if (holder && e.offset < holder.offset + holder.original.length) {
+			out.add(holder);
+			out.add(e);
+		}
+		if (!holder || e.offset + e.original.length > holder.offset + holder.original.length) holder = e;
+	}
+	return out;
 }
 
 /** 10-1 step 4: reads, converts and keys every target, and groups them by sentSha256 (6-0). Writes nothing. */
@@ -230,30 +280,51 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 	const skip = (embed: FoundEmbed, reason: SkipReason, detail?: string) =>
 		skipped.push({ offset: embed.offset, original: embed.original, reason, ...(detail === undefined ? {} : { detail }) });
 
-	for (const embed of input.embeds) {
+	const phase4 = deps.attachments === true;
+	const links = phase4 ? (input.links ?? []) : [];
+	const nested = phase4 ? overlapping([...input.embeds, ...links]) : new Set<FoundEmbed>();
+	const all = [...input.embeds.map((e) => ({ kind: 'embed' as const, e })), ...links.map((e) => ({ kind: 'link' as const, e }))].sort((a, b) => a.e.offset - b.e.offset);
+
+	for (const { kind, e: embed } of all) {
+		if (kind === 'link') {
+			// 5-4: links to notes, headings and notes not written yet are not attachments, and not listed at all.
+			const rough = roughLinkPath(embed.original);
+			const to = rough ? deps.resolveLink(rough) : undefined;
+			if (rough === undefined || rough === '' || (to ? isNoteFile(to.path) : extensionOf(rough) === '' || isNoteFile(rough))) continue;
+		}
 		if (embed.inComment) {
 			skip(embed, 'comment');
 			continue;
 		}
-		const parsed = parseEmbedSyntax(embed.original, embed.inTable);
+		const parsed = kind === 'embed' ? parseEmbedSyntax(embed.original, embed.inTable) : parseLinkSyntax(embed.original, embed.inTable);
 		if (!parsed.ok) {
 			skip(embed, parsed.reason);
 			continue;
 		}
+		const source: ReferenceSource = kind === 'embed' ? { kind, syntax: parsed.value as EmbedSyntax } : { kind, syntax: parsed.value as LinkSyntax };
 		if (embed.inNestedTable && embed.original.includes('|')) {
 			skip(embed, 'nested-table');
 			continue;
 		}
-		const linkpath = linkpathOf(parsed.value);
+		if (nested.has(embed)) {
+			skip(embed, 'overlapping');
+			continue;
+		}
+		const linkpath = linkpathOf(source.syntax);
 		const file = linkpath === undefined ? undefined : deps.resolveLink(linkpath);
 		if (!file) {
 			skip(embed, linkpath === undefined ? 'unparsable' : 'not-found');
 			continue;
 		}
+		if (phase4 && isNoteFile(file.path)) continue;
+		if (phase4 && file.path.startsWith(`${ARCHIVE_FOLDER}/`)) {
+			skip(embed, 'in-archive');
+			continue;
+		}
 		const known = byPath.get(file.path);
 		if (known) {
 			if ('skip' in known) skip(embed, known.skip, known.detail);
-			else known.occurrences.push({ embed, syntax: parsed.value });
+			else known.occurrences.push({ embed, source });
 			continue;
 		}
 		const r = await prepareFile(file, target, input, privateFiles, date, deps);
@@ -264,7 +335,7 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 		}
 		if (!r.bytes) {
 			// Design 3-1 step 4: other files hold no bytes, so maxJobMB does not count them and they are never deferred.
-			const p: Prepared = { ...r, bytes: undefined, deferred: false, occurrences: [{ embed, syntax: parsed.value }] };
+			const p: Prepared = { ...r, bytes: undefined, deferred: false, occurrences: [{ embed, source }] };
 			byPath.set(file.path, p);
 			order.push(p);
 			continue;
@@ -277,10 +348,11 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 			bytes = r.bytes;
 		} else if (!bytes) over = true;
 		held.set(r.sentSha256, bytes);
-		const p: Prepared = { ...r, bytes, deferred: !bytes, occurrences: [{ embed, syntax: parsed.value }] };
+		const p: Prepared = { ...r, bytes, deferred: !bytes, occurrences: [{ embed, source }] };
 		byPath.set(file.path, p);
 		order.push(p);
 	}
+	if (phase4) for (const r of referenceDefinitions(input.snapshot, input.references ?? [], deps)) skipped.push(r);
 
 	// 6-0 and design 3-8: one group per (sentSha256, contentType), in the order the files first appear in the note.
 	const rt = rewriteTarget(target);
@@ -307,17 +379,22 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 			groups.push(g);
 		}
 		const occurrences: PlannedOccurrence[] = [];
-		let bad = false;
-		for (const { embed, syntax } of p.occurrences) {
-			const markdown = buildMarkdown({ syntax, target: rt, key: g.key, fileBase: p.file.basename, inTable: embed.inTable });
-			if (!verifyMarkdown(markdown, rt, g.key)) bad = true;
-			occurrences.push({ offset: embed.offset, original: embed.original, inTable: embed.inTable, syntax, markdown });
+		const fileName = fileNameOf(p.file.path);
+		let bad: SkipReason | undefined;
+		for (const { embed, source } of p.occurrences) {
+			const built = buildReference({ source, format: p.format, target: rt, key: g.key, fileName, fileBase: p.file.basename, inTable: embed.inTable });
+			if (!built.ok) {
+				bad ??= built.reason;
+				continue;
+			}
+			occurrences.push({ offset: embed.offset, original: embed.original, inTable: embed.inTable, source, parts: built.parts, markdown: built.markdown });
 		}
+		// A file is rewritten everywhere or nowhere.
 		if (bad) {
-			for (const o of p.occurrences) skip(o.embed, 'markdown-check');
+			for (const o of p.occurrences) skip(o.embed, bad);
 			continue;
 		}
-		g.files.push({ itemId: deps.newId(), sourcePath: p.file.path, basename: p.file.basename, sourceSha256: p.sourceSha256, sourceSize: p.file.size, occurrences });
+		g.files.push({ itemId: deps.newId(), sourcePath: p.file.path, basename: p.file.basename, fileName, sourceSha256: p.sourceSha256, sourceSize: p.file.size, occurrences });
 	}
 
 	const sending: PlannedGroup[] = [];
@@ -336,10 +413,10 @@ async function prepareFile(
 	input: PrepareInput,
 	privateFiles: ReadonlySet<string>,
 	date: Date,
-	deps: Pick<PrepareDeps, 'encoder' | 'otherFiles'>,
+	deps: Pick<PrepareDeps, 'encoder' | 'attachments'>,
 ): Promise<Omit<Prepared, 'occurrences' | 'deferred'> | { skip: SkipReason; detail?: string }> {
 	const upload = input.settings.upload;
-	const other = deps.otherFiles === true;
+	const other = deps.attachments === true;
 	// The size is known without reading: a large file is not read whole. Each format's own limit follows (3-1 step 1).
 	if (file.size > (other ? Math.max(upload.maxFileMB, upload.maxOtherFileMB) : upload.maxFileMB) * MB) return { skip: 'too-large' };
 	let source: Uint8Array;
@@ -413,6 +490,28 @@ function prepareOther(
 		reencoded: false,
 		preparedKey: key.key,
 	};
+}
+
+const fileNameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/** Design 5-3 (D18): definitions `[id]: p` of an attachment are listed, never rewritten; usages `[t][id]` are not listed. */
+function referenceDefinitions(snapshot: string, offsets: readonly number[], deps: Pick<PrepareDeps, 'resolveLink'>): SkippedEmbed[] {
+	const out: SkippedEmbed[] = [];
+	for (const offset of offsets) {
+		const end = snapshot.indexOf('\n', offset);
+		const line = snapshot.slice(offset, end < 0 ? undefined : end).replace(/\r$/, '');
+		const m = /^\[[^\]\n]+\]:[ \t]*(<[^>\n]*>|\S+)/.exec(line);
+		if (!m) continue;
+		let path: string;
+		try {
+			path = decodeURI(m[1]!.replace(/^<|>$/g, '')).split('#')[0]!;
+		} catch {
+			continue;
+		}
+		const file = path === '' || /^[a-z][a-z0-9+.-]*:/i.test(path) ? undefined : deps.resolveLink(path);
+		if (file && !isNoteFile(file.path)) out.push({ offset, original: line, reason: 'reference-style' });
+	}
+	return out;
 }
 
 function latestHistory(settings: DeepReadonly<PluginSettings>, target: TargetKey, sentSha256: string): string | undefined {
@@ -505,7 +604,6 @@ function jobCheck(deps: Pick<RunDeps, 'settings' | 'authGeneration'>, connection
 }
 
 function newItems(plan: JobPlan, group: PlannedGroup, apply: 'replace' | 'copy'): NewPendingItem[] {
-	const rt = rewriteTarget(plan.target);
 	return group.files.map((f) => ({
 		id: f.itemId,
 		jobId: plan.jobId,
@@ -526,9 +624,9 @@ function newItems(plan: JobPlan, group: PlannedGroup, apply: 'replace' | 'copy')
 		phase: group.phase,
 		occurrences: f.occurrences.map((o) => ({
 			original: o.original,
-			kind: 'embed' as const,
-			alt: altFor({ syntax: o.syntax, target: rt, fileBase: f.basename }),
-			...(o.syntax.size === undefined ? {} : { size: o.syntax.size }),
+			kind: o.source.kind,
+			alt: o.parts.alt,
+			...(o.parts.size === undefined ? {} : { size: o.parts.size }),
 			inTable: o.inTable,
 		})),
 		apply,
@@ -734,9 +832,10 @@ async function linkDelivered(plan: JobPlan, confirmed: Confirmed, deps: RunDeps,
 	for (const r of ready) {
 		const { f, g } = files.get(r.itemId)!;
 		const key = r.key!;
-		const mds = f.occurrences.map((o) => buildMarkdown({ syntax: o.syntax, target: rt, key, fileBase: f.basename, inTable: o.inTable }));
-		// 9-3: each link must read back as one image with this key; otherwise it stays delivered (copy later).
-		if (!mds.every((md) => verifyMarkdown(md, rt, key))) {
+		const built = f.occurrences.map((o) => buildReference({ source: o.source, format: g.format, target: rt, key, fileName: f.fileName, fileBase: f.basename, inTable: o.inTable }));
+		// 9-3: each must read back as one embed or link with this key; otherwise it stays delivered (copy later).
+		const mds = built.flatMap((b) => (b.ok ? [b.markdown] : []));
+		if (mds.length !== built.length) {
 			r.reason = 'markdown-check';
 			continue;
 		}
@@ -857,7 +956,7 @@ export async function uploadCommand(deps: CommandDeps, preview: boolean): Promis
 		const detection = await deps.detect();
 		if (!detection.ok) return { stop: 'detection', detection };
 		const prepared = await prepareJob(
-			{ notePath: deps.notePath, snapshot: detection.snapshot, embeds: detection.embeds, connection, settings: deps.settings.current },
+			{ notePath: deps.notePath, snapshot: detection.snapshot, embeds: detection.embeds, links: detection.links, references: detection.references, connection, settings: deps.settings.current },
 			deps.prepare,
 		);
 		if (!prepared.ok) return { stop: 'prepare', reason: prepared.reason, ...(prepared.detail ? { detail: prepared.detail } : {}) };

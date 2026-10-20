@@ -16,6 +16,7 @@ import {
 	prepareJob,
 	type PrepareDeps,
 	rebuiltFormatMatches,
+	recordMarkdown,
 	type RunDeps,
 	runJob,
 	inExcludedFolder,
@@ -204,7 +205,10 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 async function plan(w: World, note: string, connection: StorageConnection = priv): Promise<JobPlan> {
 	const parsed = parseEmbeds(note);
 	if (!parsed.ok) throw new Error('unparsable');
-	const r = await prepareJob({ notePath: 'notes/日報.md', snapshot: note, embeds: parsed.embeds, connection: w.settings.current.connections.find((c) => c.id === connection.id)!, settings: w.settings.current }, w.prep);
+	const r = await prepareJob(
+		{ notePath: 'notes/日報.md', snapshot: note, embeds: parsed.embeds, links: parsed.links, references: parsed.references, connection: w.settings.current.connections.find((c) => c.id === connection.id)!, settings: w.settings.current },
+		w.prep,
+	);
 	if (!r.ok) throw new Error(r.reason);
 	return r.plan;
 }
@@ -1286,7 +1290,7 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 	const MP4 = file('v-mp4.mp4');
 	const other = async (connections?: StorageConnection[]) => {
 		const w = await world(connections);
-		w.prep = { ...w.prep, otherFiles: true };
+		w.prep = { ...w.prep, attachments: true };
 		w.files.set('img/doc.pdf', PDF);
 		w.files.set('img/clip.mp4', MP4);
 		w.files.set('img/clip.mov', MP4);
@@ -1449,3 +1453,109 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 		expect(p.skipped.map((s) => s.reason)).toEqual(['unsupported', 'unsupported']);
 	});
 });
+
+describe('links and their Markdown in the job (design 5-4, 6-2, 6-4)', () => {
+	const file = (name: string) => new Uint8Array(readFileSync(new URL(`./fixtures/files/${name}`, import.meta.url)));
+	const PDF = file('p-ok.pdf');
+	const on = async (connections?: StorageConnection[]) => {
+		const w = await world(connections);
+		w.prep = { ...w.prep, attachments: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/ノート.md', new TextEncoder().encode('# note'));
+		w.files.set('img/board.canvas', new TextEncoder().encode('{}'));
+		return w;
+	};
+	const mds = (p: JobPlan) => p.groups.flatMap((g) => g.files.flatMap((f) => f.occurrences.map((o) => o.markdown)));
+
+	it('off: links and other files change nothing in the plan (Phase 3)', async () => {
+		const w = await world();
+		w.files.set('img/doc.pdf', PDF);
+		const p = await plan(w, '![[a.png]] [[a.png]] [t](doc.pdf) [[doc.pdf]] [x][id]\n\n[id]: doc.pdf\n');
+		const q = await plan(w, '![[a.png]]');
+		expect(p.groups.map((g) => g.files.map((f) => f.occurrences.map((o) => o.original)))).toEqual([[['![[a.png]]']]]);
+		expect(p.skipped).toEqual(q.skipped);
+	});
+
+	it('private: the embed and the links of one file are one upload; each keeps its kind', async () => {
+		const w = await on();
+		const note = '![[doc.pdf]] [[doc.pdf]] [[doc.pdf|資料]] [t](doc.pdf)';
+		const p = await plan(w, note);
+		expect(p.groups).toHaveLength(1);
+		expect(mds(p)).toEqual(['![doc.pdf](s3-bridge://work/k/doc.pdf)', '[doc.pdf](s3-bridge://work/k/doc.pdf)', '[資料](s3-bridge://work/k/doc.pdf)', '[t](s3-bridge://work/k/doc.pdf)']);
+		w.disk.text = note;
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.linked])).toEqual([['delivered', true]]);
+		expect(w.disk.text).toBe('![doc.pdf](s3-bridge://work/k/doc.pdf) [doc.pdf](s3-bridge://work/k/doc.pdf) [資料](s3-bridge://work/k/doc.pdf) [t](s3-bridge://work/k/doc.pdf)');
+	});
+
+	it('public: an embed of a PDF becomes a link; a link to an image is a link, sharing the embed\'s upload', async () => {
+		const w = await on();
+		const p = await plan(w, '![[doc.pdf|資料]] ![[a.png]] [[a.png]]', pub);
+		const base = 'https://cdn.example.com/';
+		const [pdf, png] = [p.groups.find((g) => g.format === 'pdf')!, p.groups.find((g) => g.format === 'png')!];
+		expect(pdf.files[0]!.occurrences.map((o) => o.markdown)).toEqual([`[資料](${base}${pdf.key})`]);
+		expect(png.files[0]!.occurrences.map((o) => o.markdown)).toEqual([`![](${base}${png.key})`, `[a.png](${base}${png.key})`]);
+	});
+
+	it('links to notes, headings and notes not written yet are not listed at all; attachments that cannot be used are', async () => {
+		const w = await on();
+		const p = await plan(w, '[[ノート]] [[ノート.md]] [[#見出し]] [[まだない]] [[board.canvas]] [n](ノート.md) [[doc.pdf#page=2]] [[missing.pdf]] %% [[doc.pdf]] %%');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
+			['[[doc.pdf#page=2]]', 'subpath'],
+			['[[missing.pdf]]', 'not-found'],
+			['[[doc.pdf]]', 'comment'],
+		]);
+	});
+
+	it('an archived file is not uploaded again (5-4)', async () => {
+		const w = await on();
+		const resolve = w.prep.resolveLink;
+		w.prep = { ...w.prep, resolveLink: (p) => (p === 'old.pdf' ? { path: '_s3-archive/old.pdf', basename: 'old', size: PDF.length, read: () => Promise.resolve(PDF) } : resolve(p)) };
+		const p = await plan(w, '[[old.pdf]] ![[old.pdf]]');
+		expect(p.skipped.map((s) => s.reason)).toEqual(['in-archive', 'in-archive']);
+	});
+
+	it('reference-style: the definition of an attachment is listed, never rewritten; the note is still uploaded (D18)', async () => {
+		const w = await on();
+		const p = await plan(w, '[資料][id] と [[doc.pdf]]\n\n[id]: doc.pdf\n[n]: ノート.md\n');
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([['[id]: doc.pdf', 'reference-style']]);
+		expect(mds(p)).toEqual(['[doc.pdf](s3-bridge://work/k/doc.pdf)']);
+	});
+
+	it('a link holding an embed: neither is rewritten, and nothing throws (9-1)', async () => {
+		const w = await on();
+		const note = '[![a](a.png)](doc.pdf) ![[a.png]]';
+		const p = await plan(w, note);
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
+			['[![a](a.png)](doc.pdf)', 'overlapping'],
+			['![a](a.png)', 'overlapping'],
+		]);
+		expect(p.groups.flatMap((g) => g.files.flatMap((f) => f.occurrences.map((o) => o.original)))).toEqual(['![[a.png]]']);
+		w.disk.text = note;
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => f.linked)).toEqual([true]);
+		expect(w.disk.text).toBe('[![a](a.png)](doc.pdf) ![a](s3-bridge://work/k/a.png)');
+	});
+
+	it('the alt of ![t](p) with an escape is not turned into a link text', async () => {
+		const w = await on();
+		const p = await plan(w, '![a\\*b](doc.pdf)', pub);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['escaped-text']);
+	});
+
+	it('a record makes the same Markdown as the plan (6-4), for a public PDF embed and links in a table', async () => {
+		const note = ['| a | b |', '|---|---|', '| [[doc.pdf\\|50% off]] | ![[doc.pdf\\|300]] |', '', '![[doc.pdf]] [[doc.pdf|資料]]'].join('\n');
+		for (const c of [priv, pub]) {
+			const w = await on();
+			// Private: the Put is stopped by an abort; public: I15 refuses the Put. Either way the record stays.
+			const p = c === priv ? await stoppedJob(w, note) : await plan(w, note, pub);
+			if (c === pub) await runJob(p, confirm(w, pub), w.run);
+			const conn = w.settings.current.connections.find((x) => x.id === c.id)!;
+			expect(w.pending.items).toHaveLength(1);
+			expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed', 'embed', 'link']);
+			expect(recordMarkdown(w.pending.items[0]!, conn)).toEqual([...new Set(mds(p))]);
+		}
+	});
+});
+

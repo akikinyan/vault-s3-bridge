@@ -30,9 +30,17 @@ const file = (path: string, sha: string, md = [`![a](s3://work/k/a.png)`]) => ({
 	itemId: path,
 	sourcePath: path,
 	basename: 'a',
+	fileName: 'a.png',
 	sourceSha256: sha,
 	sourceSize: 1000,
-	occurrences: md.map((m, i) => ({ offset: i, original: '![[a.png]]', inTable: false, syntax: { kind: 'wiki' as const, path: 'a.png' }, markdown: m })),
+	occurrences: md.map((m, i) => ({
+		offset: i,
+		original: '![[a.png]]',
+		inTable: false,
+		source: { kind: 'embed' as const, syntax: { kind: 'wiki' as const, path: 'a.png' } },
+		parts: { shape: 'embed' as const, alt: 'a', inTable: false },
+		markdown: m,
+	})),
 });
 
 function plan(over: Partial<JobPlan> = {}, classification: 'public' | 'private' = 'private', keyTemplate = 'k/{filename}.{ext}'): JobPlan {
