@@ -1,12 +1,16 @@
 import { REFERENCE_SCHEME } from '../reference/reference';
+import { renderContent } from './content';
 import { PreviewError } from './errors';
-import type { Lease } from './service';
+import type { Lease, PreviewInfo, PreviewText } from './service';
 
 export interface LeaseSource {
 	acquire(src: string): Lease;
 }
 
 export type PlaceholderRenderer = (error: PreviewError, reference: string) => HTMLElement;
+
+/** Design 7-7: a display put right after the hidden `img` for what is not drawn by the `img` itself. */
+export type ContentRenderer = (content: PreviewText | PreviewInfo, reference: string) => HTMLElement;
 
 const LOADING = 'vault-s3-bridge-loading';
 const HIDDEN = 'vault-s3-bridge-hidden';
@@ -36,6 +40,7 @@ export class ImageReplacer {
 	constructor(
 		private readonly source: () => LeaseSource,
 		private readonly renderPlaceholder: PlaceholderRenderer,
+		private readonly renderOther: ContentRenderer = renderContent,
 	) {}
 
 	/** Handles every image in a newly added or rendered subtree. */
@@ -69,11 +74,19 @@ export class ImageReplacer {
 			return true;
 		};
 		lease.result.then(
-			(image) => {
+			(shown) => {
 				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
-				this.ownSrc.set(img, image.url);
-				img.setAttribute('src', image.url);
+				// An image and an SVG are drawn by the img; text and information go right after it (7-7).
+				if (!('kind' in shown) || shown.kind === 'svg') {
+					this.ownSrc.set(img, shown.url);
+					img.setAttribute('src', shown.url);
+					return;
+				}
+				const display = this.renderOther(shown, src);
+				img.addClass(HIDDEN);
+				img.insertAdjacentElement('afterend', display);
+				this.placeholders.set(img, display);
 			},
 			(error: unknown) => {
 				if (!current() || replaced()) return;

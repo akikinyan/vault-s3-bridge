@@ -73,3 +73,37 @@ img.vault-s3-bridge-loading {
 	color: var(--text-muted);
 	word-break: break-all;
 }
+
+/* Phase 4 previews (design 7-2, 7-4): text and information shown after the hidden img. */
+.vault-s3-bridge-text-box {
+	display: block;
+	max-height: 24em;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-text {
+	margin: 0;
+	padding: var(--size-4-2);
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: var(--font-smaller);
+}
+
+.vault-s3-bridge-text-note,
+.vault-s3-bridge-info-meta {
+	color: var(--text-muted);
+	font-size: var(--font-smaller);
+}
+
+.vault-s3-bridge-info {
+	display: inline-block;
+	padding: var(--size-4-2) var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-info-name {
+	font-weight: var(--font-semibold);
+}

@@ -46,9 +46,9 @@ const leases = cases.map(([alias, key]) => service.acquire(formatReference(alias
 for (const [i, [, key, expected]] of cases.entries()) {
 	let outcome: string;
 	try {
-		const image = await leases[i]!.result;
-		outcome = image.url.startsWith('blob:') ? 'ok' : 'no-blob';
-		outcome += ` ${image.width}x${image.height}`;
+		const shown = await leases[i]!.result;
+		if ('kind' in shown) outcome = shown.kind;
+		else outcome = `${shown.url.startsWith('blob:') ? 'ok' : 'no-blob'} ${shown.width}x${shown.height}`;
 	} catch (error) {
 		outcome = error instanceof PreviewError ? error.code : 'unexpected-error';
 	}

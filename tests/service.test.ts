@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { formatReference } from '../src/reference/reference';
 import { setProfile } from '../src/settings/device';
 import { mergeRecords, recordConnection, recordsOf } from '../src/settings/registry';
+import type { PreviewImage } from '../src/preview/service';
 import { body, connection, controllableSend, pngBytes, settingsWith, setupService, tick } from './fixtures/preview';
 import { serviceError } from './fixtures/sdkErrors';
 
@@ -56,7 +57,7 @@ describe('PreviewService — fetching', () => {
 		const [a, b] = [t.service.acquire(REF), t.service.acquire(REF)];
 		const [ra, rb] = await Promise.all([a.result, b.result]);
 		expect(ra).toEqual({ url: 'blob:test/1', width: 10, height: 10 });
-		expect(rb.url).toBe(ra.url);
+		expect((rb as PreviewImage).url).toBe((ra as PreviewImage).url);
 		expect(t.gets()).toHaveLength(1);
 		expect(t.gets()[0]).toMatchObject({ bucket: 'x', key: 'img/a.png' });
 	});

@@ -295,3 +295,31 @@ describe('ImageReplacer', () => {
 		expect(img.getAttribute('src')).toBe('blob:new');
 	});
 });
+
+describe('ImageReplacer — other displays (design 7-2, 7-7)', () => {
+	it('an SVG goes into the img; text and information go after the hidden img and leave with it', async () => {
+		const svg = setup();
+		svg.replacer.process(svg.img);
+		svg.leases[0]!.resolve({ kind: 'svg', url: 'blob:x/1' } as never);
+		await flush();
+		expect(svg.img.getAttribute('src')).toBe('blob:x/1');
+
+		const t = setup();
+		t.replacer.process(t.img);
+		t.leases[0]!.resolve({ kind: 'text', text: '<b>not markup</b>', truncated: true } as never);
+		await flush();
+		expect(t.img.hasClass('vault-s3-bridge-hidden')).toBe(true);
+		const pre = t.root.querySelector('pre.vault-s3-bridge-text')!;
+		expect(pre.textContent).toBe('<b>not markup</b>');
+		expect(pre.children).toHaveLength(0);
+		t.replacer.release(t.img);
+		expect(t.root.querySelector('pre')).toBeNull();
+		expect(t.img.hasClass('vault-s3-bridge-hidden')).toBe(false);
+
+		const i = setup();
+		i.replacer.process(i.img);
+		i.leases[0]!.resolve({ kind: 'info', name: 'a.pdf', size: 2048, type: 'pdf' } as never);
+		await flush();
+		expect(i.root.querySelector('.vault-s3-bridge-info-name')?.textContent).toBe('a.pdf');
+	});
+});
