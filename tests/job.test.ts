@@ -91,6 +91,8 @@ interface World {
 	reads: string[];
 	/** Paths hashed from a stream (design 3-3). */
 	hashed: string[];
+	/** Paths read whole while sending, resuming or linking (RunDeps.readSource). */
+	wholeReads: string[];
 	changed: Set<string>;
 	disk: { text: string | undefined };
 	editors: FakeEditor[];
@@ -130,6 +132,7 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		files,
 		reads: [],
 		hashed: [],
+		wholeReads: [],
 		changed: new Set(),
 		disk: { text: note },
 		editors: [],
@@ -174,7 +177,10 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		signal: w.abort.signal,
 		authGeneration: (id) => profileOf(settings.device, id)?.generation,
 		sourceChanged: (p) => w.changed.has(p),
-		readSource: (p) => Promise.resolve(w.files.get(p)),
+		readSource: (p) => {
+			w.wholeReads.push(p);
+			return Promise.resolve(w.files.get(p));
+		},
 		hashSource: (p) => {
 			w.hashed.push(p);
 			const b = w.files.get(p);
@@ -1312,15 +1318,17 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 
 	it('sends a PDF: every source hashed from a stream, one read before the Put, delivered with its Content-Type', async () => {
 		const w = await other();
-		const p = await plan(w, '![[doc.pdf]]');
-		w.reads.length = 0;
+		w.files.set('img/doc copy.pdf', PDF);
+		const p = await plan(w, '![[doc.pdf]] ![[doc copy.pdf]]');
+		expect(p.groups.map((g) => g.files.map((f) => f.sourcePath))).toEqual([['img/doc.pdf', 'img/doc copy.pdf']]);
 		const r = await runJob(p, confirm(w, priv), w.run);
-		expect(r.files.map((f) => f.outcome)).toEqual(['delivered']);
+		expect(r.files.map((f) => f.outcome)).toEqual(['delivered', 'delivered']);
 		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
 		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
 		expect(w.s3.objects.get('k/doc.pdf')).toBe(checksumOf(sha256Hex(PDF)));
-		expect(w.hashed.length).toBeGreaterThan(0);
-		expect(w.pending.items.length + w.settings.current.history.length).toBeGreaterThan(0);
+		// Both sources hashed from a stream; only the first read whole, once; the links checked by hash too.
+		expect(new Set(w.hashed)).toEqual(new Set(['img/doc.pdf', 'img/doc copy.pdf']));
+		expect(w.wholeReads).toEqual(['img/doc.pdf']);
 		expect(w.settings.current.history.at(-1)).toMatchObject({ format: 'pdf', converter: 'c1;orig' });
 	});
 
@@ -1384,8 +1392,9 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 	it('resumes a PDF: hashed from a stream, read once, put with the recorded Content-Type', async () => {
 		const w = await other();
 		await stoppedJob(w, '![[doc.pdf]]');
-		w.reads.length = 0;
+		w.wholeReads.length = 0;
 		await resumeCmd(w).run();
+		expect(w.wholeReads).toEqual(['img/doc.pdf']);
 		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
 		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
 		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
@@ -1400,5 +1409,43 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 		expect(rebuiltFormatMatches(file('a-page.html'), { format: 'active', contentType: 'application/octet-stream', sourcePath: 'img/page.html', classification: 'public' })).toBe(false);
 		expect(rebuiltFormatMatches(PNG_A, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(true);
 		expect(rebuiltFormatMatches(PDF, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(false);
+	});
+
+	it('a source that stops giving the prepared bytes right before the first Put leaves the job, as a change (6-6)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[doc.pdf]]');
+		const read = w.run.readSource;
+		w.run = {
+			...w.run,
+			readSource: (path) => {
+				// Replaced after it was hashed: what is read is not the prepared bytes.
+				w.files.set(path, file('p-pdf-late-header.pdf'));
+				return read(path);
+			},
+		};
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'changed']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+		expect(w.pending.items).toEqual([]);
+	});
+
+	it('SVG: private as svg with its Content-Type; never public', async () => {
+		const w = await other();
+		w.files.set('img/pic.svg', file('a-img.svg'));
+		const q = await plan(w, '![[pic.svg]]');
+		expect(q.groups.map((g) => [g.format, g.contentType])).toEqual([['svg', 'image/svg+xml']]);
+		const p = await plan(w, '![[pic.svg]]', pub);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['active-content']);
+	});
+
+	it('bytes that start like an image but cannot be read are rejected as in Phase 3, not sent unstripped', async () => {
+		const w = await other();
+		const broken = PNG_A.slice();
+		broken.fill(0, 16, 24);
+		w.files.set('img/broken.png', broken);
+		w.files.set('img/broken.txt', broken);
+		const p = await plan(w, '![[broken.png]] ![[broken.txt]]');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['unsupported', 'unsupported']);
 	});
 });

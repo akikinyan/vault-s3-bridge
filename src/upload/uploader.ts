@@ -101,6 +101,8 @@ class Group {
 		ids: readonly string[],
 		mode: Mode,
 		bytes: Uint8Array | undefined,
+		/** Started by this job (sendGroup), not resumed from a record. */
+		private readonly fresh = false,
 	) {
 		this.live = [...ids];
 		this.mode = mode;
@@ -294,6 +296,12 @@ class Group {
 				if ('changed' in r) continue;
 				if ('stopped' in r) {
 					if (r.settled) return;
+					// Design 3-3 with 6-6: a source of this job that no longer gives the prepared bytes before any Put
+					// went out is a change before sending, as dropChanged finds it, not an unresolved record.
+					if (this.fresh && r.stopped === 'cannot-rebuild') {
+						for (const item of this.items()) await this.exclude(item, 'changed');
+						return;
+					}
 					return REBUILD_FAILURES.has(r.stopped) ? this.unresolved(r.stopped) : this.stop(r.stopped);
 				}
 				lastPut = r.result;
@@ -447,7 +455,7 @@ class Group {
 export async function sendGroup(items: readonly NewPendingItem[], bytes: Uint8Array | undefined, deps: UploaderDeps): Promise<ItemResult[]> {
 	const ids = items.map((i) => i.id);
 	if (!(await deps.pending.add(items)).ok) return ids.map((id) => ({ id, outcome: 'not-recorded' as const }));
-	const group = new Group(deps, ids, 'send', bytes);
+	const group = new Group(deps, ids, 'send', bytes, true);
 	await group.savePrivate();
 	await group.run(items[0]?.phase === 'candidate' ? 'candidate' : 'fresh');
 	return group.finish();

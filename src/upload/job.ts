@@ -349,7 +349,8 @@ async function prepareFile(
 		return { skip: 'read-failed' };
 	}
 	// 3-1 step 2: image bytes take Phase 3's path whatever the extension; classifyFile is never asked about them.
-	if (other && detectImage(source).kind !== 'image') return prepareOther(file, source, target, input, privateFiles, date);
+	// So do bytes that only start like an image: Phase 3 rejects them rather than send them unstripped.
+	if (other && detectImage(source).kind !== 'image' && !startsLikeImage(source)) return prepareOther(file, source, target, input, privateFiles, date);
 	const policy = { classification: target.classification, stripPrivate: upload.stripPrivate, webp: { ...upload.webp }, maxFileMB: upload.maxFileMB };
 	const prepared = await prepareBytes(source, policy, deps.encoder);
 	if (!prepared.ok) return { skip: prepared.reason, ...(prepared.detail === undefined ? {} : { detail: prepared.detail }) };
@@ -370,6 +371,17 @@ async function prepareFile(
 		reencoded: prepared.reencoded,
 		preparedKey: key.key,
 	};
+}
+
+/** The signature of PNG, JPEG, GIF or WebP, whether or not the rest can be read. */
+function startsLikeImage(b: Uint8Array): boolean {
+	const ascii = (at: number, n: number) => String.fromCharCode(...b.subarray(at, at + n));
+	return (
+		(b[0] === 0x89 && ascii(1, 3) === 'PNG') ||
+		(b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) ||
+		ascii(0, 4) === 'GIF8' ||
+		(ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP')
+	);
 }
 
 /** Design 3-1 step 3: a file sent as it is, classified by its bytes. Its bytes are dropped once hashed. */
