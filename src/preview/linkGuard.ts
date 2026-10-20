@@ -42,9 +42,9 @@ function destination(line: string, open: number): { end: number; dest: string } 
 }
 
 /**
- * Design 7-5: the `s3-bridge:` URL of the link whose text covers column `ch` of `line`: `[t](s3-bridge://…)`, an
- * embed `![t](…)`, or an autolink `<s3-bridge://…>`. Only the link itself counts, so a click elsewhere on the line
- * still moves the cursor.
+ * Design 7-5: the `s3-bridge:` URL of the link whose text covers column `ch` of `line`: `[t](s3-bridge://…)` or an
+ * autolink `<s3-bridge://…>`. Only the link itself counts, so a click elsewhere on the line still moves the cursor.
+ * An embed `![t](…)` is not a link: clicking an embedded image works as before (layer 3 still stops its URL).
  */
 export function s3LinkAt(line: string, ch: number): string | undefined {
 	for (const m of line.matchAll(/<(s3-bridge:[^>\s]*)>/gi)) {
@@ -55,8 +55,8 @@ export function s3LinkAt(line: string, ch: number): string | undefined {
 		if (close < 0) continue;
 		const d = destination(line, close + 1);
 		if (!d || !isS3Reference(d.dest)) continue;
-		const start = i > 0 && line[i - 1] === '!' ? i - 1 : i;
-		if (ch >= start && ch < d.end) return d.dest.trim();
+		if (i > 0 && line[i - 1] === '!') continue;
+		if (ch >= i && ch < d.end) return d.dest.trim();
 	}
 	return undefined;
 }

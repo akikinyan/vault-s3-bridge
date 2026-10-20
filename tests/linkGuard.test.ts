@@ -15,11 +15,12 @@ describe('s3LinkAt (design 7-5): only the link itself', () => {
 	const line = 'before [資料](s3-bridge://work/k/a.pdf) mid ![x](s3-bridge://work/k/b.png) <S3-BRIDGE://work/c> [web](https://example.com) end';
 	const at = (s: string) => line.indexOf(s);
 
-	it('inside a link, an embed or an autolink', () => {
+	it('inside a link or an autolink; an embed is not a link', () => {
 		expect(s3LinkAt(line, at('[資料]'))).toBe('s3-bridge://work/k/a.pdf');
 		expect(s3LinkAt(line, at('資料'))).toBe('s3-bridge://work/k/a.pdf');
 		expect(s3LinkAt(line, at('k/a.pdf'))).toBe('s3-bridge://work/k/a.pdf');
-		expect(s3LinkAt(line, at('![x]'))).toBe('s3-bridge://work/k/b.png');
+		expect(s3LinkAt(line, at('![x]'))).toBeUndefined();
+		expect(s3LinkAt(line, at('[x]'))).toBeUndefined();
 		expect(s3LinkAt(line, at('work/c>'))).toBe('S3-BRIDGE://work/c');
 	});
 
@@ -32,7 +33,8 @@ describe('s3LinkAt (design 7-5): only the link itself', () => {
 		expect(s3LinkAt(line, at(') mid') + 1)).toBeUndefined();
 	});
 
-	it('angle brackets, a title, nested brackets in the text', () => {
+	it('angle brackets, a title, nested brackets in the text, a link around an embed', () => {
+		expect(s3LinkAt('[![i](a.png)](s3-bridge://w/k)', 0)).toBe('s3-bridge://w/k');
 		expect(s3LinkAt('[a](<s3-bridge://w/k a.pdf>)', 1)).toBe('s3-bridge://w/k a.pdf');
 		expect(s3LinkAt('[a](s3-bridge://w/k "t")', 1)).toBe('s3-bridge://w/k');
 		expect(s3LinkAt('[a [b]](s3-bridge://w/k)', 4)).toBe('s3-bridge://w/k');
