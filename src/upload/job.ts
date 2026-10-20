@@ -533,11 +533,36 @@ export interface Confirmed {
 	/** This device's authentication generation of the connection, if a profile is set. */
 	authGeneration: number | undefined;
 	apply: 'replace' | 'copy';
+	/**
+	 * Design 4-1: the items the user confirmed on this screen, each for the bytes shown (itemId → sentSha256). Kept
+	 * in memory only: neither the records nor the settings hold it, and a later run asks again.
+	 */
+	confirmations: ReadonlyMap<string, string>;
 }
 
-export function confirmedValues(connection: DeepReadonly<StorageConnection>, authGeneration: number | undefined, apply: 'replace' | 'copy'): Confirmed {
-	return { connection: stableStringify(connection), authGeneration, apply };
+export function confirmedValues(
+	connection: DeepReadonly<StorageConnection>,
+	authGeneration: number | undefined,
+	apply: 'replace' | 'copy',
+	confirmations: ReadonlyMap<string, string> = new Map(),
+): Confirmed {
+	return { connection: stableStringify(connection), authGeneration, apply, confirmations };
 }
+
+/** Design 4-1: what the user chose on the confirmation screen. */
+export interface ConfirmChoice {
+	apply: 'replace' | 'copy';
+	/** Items whose format needs confirming in public storage and that the user confirmed. */
+	confirmed: readonly string[];
+}
+
+/** Design 4-1: a public item of a format a person must confirm before it is put there (I15). */
+export function needsConfirmation(item: { classification: 'public' | 'private'; format: UploadFormat }): boolean {
+	return item.classification === 'public' && publicUseOf(item.format) === 'confirm';
+}
+
+const isConfirmedBy = (confirmations: ReadonlyMap<string, string>) => (item: DeepReadonly<PendingItem>) =>
+	!needsConfirmation(item) || confirmations.get(item.id) === item.sentSha256;
 
 export interface RunDeps {
 	settings: Pick<SettingsStore, 'checkpoint' | 'mutate' | 'subscribe' | 'current' | 'readOnly'>;
@@ -751,6 +776,7 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 			timeoutMs: deps.timeoutMs,
 			check: jobCheck(deps, plan.target.connectionId, confirmed),
 			sourceUnchanged: (item: DeepReadonly<PendingItem>) => sourceUnchanged(deps, item),
+			isConfirmed: isConfirmedBy(confirmed.confirmations),
 			sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
 			// Within the job an image's prepared bytes are the recorded ones, as long as every source is unchanged.
 			// Other files are read again right before the first Put (3-3).
@@ -938,7 +964,7 @@ export interface CommandDeps {
 	prepare: PrepareDeps;
 	authGeneration(connectionId: string): number | undefined;
 	/** 11-2; undefined when cancelled. Not called in preview mode beyond showing the plan. */
-	confirm(plan: JobPlan, preview: boolean): Promise<'replace' | 'copy' | undefined>;
+	confirm(plan: JobPlan, preview: boolean): Promise<ConfirmChoice | undefined>;
 	run(plan: JobPlan, confirmed: Confirmed): Promise<JobResult>;
 }
 
@@ -964,10 +990,13 @@ export async function uploadCommand(deps: CommandDeps, preview: boolean): Promis
 		const plan = prepared.plan;
 		// Recorded as the screen opens: the connection the plan was made with. A change since then stops the first checkpoint.
 		const authGeneration = deps.authGeneration(connection.id);
-		const apply = await deps.confirm(plan, preview);
+		const choice = await deps.confirm(plan, preview);
 		if (preview) return { stop: 'preview', plan };
-		if (!apply) return { stop: 'cancelled', plan };
-		return { done: await deps.run(plan, confirmedValues(connection, authGeneration, apply)), plan };
+		if (!choice) return { stop: 'cancelled', plan };
+		// Each confirmation holds the bytes the screen showed for that item.
+		const shown = new Map(plan.groups.flatMap((g) => g.files.map((f) => [f.itemId, g.sentSha256] as const)));
+		const confirmations = new Map(choice.confirmed.flatMap((id) => (shown.has(id) ? [[id, shown.get(id)!] as const] : [])));
+		return { done: await deps.run(plan, confirmedValues(connection, authGeneration, choice.apply, confirmations)), plan };
 	} finally {
 		release();
 	}
@@ -1053,7 +1082,7 @@ export interface ResumeResult {
  * connection and authentication as confirmed, inside every checkpoint. Bytes are rebuilt from the source files
  * and must hash to the recorded sentSha256 (6-5 step 2); otherwise nothing is re-sent.
  */
-export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration'>, deps: ResumeDeps): Promise<ResumeResult> {
+export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration' | 'confirmations'>, deps: ResumeDeps): Promise<ResumeResult> {
 	const id = target.connection.id;
 	const watch = watchAbort(deps.settings, deps.signal, id, confirmed.connection);
 	const sourceBytes = async (path: string, sha: string) => {
@@ -1086,6 +1115,7 @@ export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed,
 				timeoutMs: deps.timeoutMs,
 				check: jobCheck(deps, id, confirmed),
 				sourceUnchanged: (item) => sourceUnchanged(deps, item),
+				isConfirmed: isConfirmedBy(confirmed.confirmations),
 				sourceChanged: (item) => deps.sourceChanged(item.sourcePath),
 				rebuild: async (items) => {
 					if (!items.every((i) => isImageFormat(i.format))) return rebuildOther(deps, items);
@@ -1121,9 +1151,12 @@ export interface ResumeCommandDeps {
 	pending: Pick<PendingStore, 'status' | 'items'>;
 	settings: Pick<SettingsStore, 'current'>;
 	authGeneration(connectionId: string): number | undefined;
-	/** The confirmation screen (I13: a previous session's confirmation is not enough). */
-	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
-	run(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration'>): Promise<ResumeResult>;
+	/**
+	 * The confirmation screen (I13: a previous session's confirmation is not enough). Undefined cancels; otherwise
+	 * the items the user confirmed for public storage (4-3: asked again, never taken from an earlier run).
+	 */
+	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<readonly string[] | undefined>;
+	run(target: ResumeTarget, confirmed: Pick<Confirmed, 'connection' | 'authGeneration' | 'confirmations'>): Promise<ResumeResult>;
 }
 
 export async function resumeCommand(deps: ResumeCommandDeps): Promise<ResumeStop | { done: ResumeResult[]; mismatched: number }> {
@@ -1134,10 +1167,13 @@ export async function resumeCommand(deps: ResumeCommandDeps): Promise<ResumeStop
 		const { ready, mismatched } = resumeTargets(deps.pending.items, deps.settings.current);
 		if (ready.length === 0) return { stop: 'nothing', mismatched: mismatched.length };
 		// Recorded as the screen opens, as for an upload.
+		const shown = new Map(deps.pending.items.map((i) => [i.id, i.sentSha256]));
 		const confirmed = new Map(ready.map((t) => [t.connection.id, { connection: stableStringify(t.connection), authGeneration: deps.authGeneration(t.connection.id) }]));
-		if (!(await deps.confirm(ready, mismatched.length))) return { stop: 'cancelled' };
+		const chosen = await deps.confirm(ready, mismatched.length);
+		if (!chosen) return { stop: 'cancelled' };
+		const confirmations = new Map(chosen.flatMap((id) => (shown.has(id) ? [[id, shown.get(id)!] as const] : [])));
 		const done: ResumeResult[] = [];
-		for (const t of ready) done.push(await deps.run(t, confirmed.get(t.connection.id)!));
+		for (const t of ready) done.push(await deps.run(t, { ...confirmed.get(t.connection.id)!, confirmations }));
 		return { done, mismatched: mismatched.length };
 	} finally {
 		release();

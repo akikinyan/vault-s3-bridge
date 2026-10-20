@@ -230,6 +230,17 @@ describe('PendingStore — removal rules (7-2)', () => {
 		expect(await (await itemIn('stopped', { uncertain: true, putSent: true })).store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
 	});
 
+	it('design 4-5: an unconfirmed item goes only if it was never sent; otherwise it is set aside in its own group', async () => {
+		expect(await (await itemIn('recorded')).store.removeIfNeverSent(['a'])).toEqual({ ok: true });
+		// Unlike removeFailed: a Put once sent keeps the record, even if every Put was rejected.
+		expect(await (await itemIn('stopped', { putSent: true })).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await (await itemIn('indeterminate', { putSent: true, uncertain: true })).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await (await itemIn('delivered')).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		const { store } = await itemIn('indeterminate', { putSent: true, uncertain: true, groupId: 'g-1' });
+		expect(await store.setAsideUnconfirmed(['a'], 'g-2')).toEqual({ ok: true });
+		expect(store.items[0]).toMatchObject({ state: 'stopped', reason: 'needs-confirmation', groupId: 'g-2', putSent: true, uncertain: true });
+	});
+
 	it('leaves putting without uncertainty only through a recorded rejection', async () => {
 		const io = new FakeIO();
 		const store = await storeWith(io);

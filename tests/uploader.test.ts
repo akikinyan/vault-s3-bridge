@@ -1032,9 +1032,11 @@ describe('sendGroup — files other than images (design 3-3, 3-5, 3-7)', () => {
 	it('public: an item whose format needs confirming is never put unconfirmed (I15), but may be reused', async () => {
 		const s = await setup();
 		expect(await sendGroup([pubItem('x', { format: 'pdf', contentType: 'application/pdf', key: 'p/x.pdf', preparedKey: 'p/x.pdf' })], undefined, s.deps)).toEqual([
-			{ id: 'x', outcome: 'stopped', reason: 'needs-confirmation' },
+			{ id: 'x', outcome: 'excluded', reason: 'needs-confirmation' },
 		]);
 		expect(s.s3.ops()).toEqual(['head:p/x.pdf']);
+		// 4-5: never put, so the record goes.
+		expect(s.pending.items).toEqual([]);
 
 		const t = await setup();
 		t.s3.objects.set('p/y.pdf', checksumOf(SENT));
@@ -1050,5 +1052,46 @@ describe('sendGroup — files other than images (design 3-3, 3-5, 3-7)', () => {
 			{ id: 'z', outcome: 'delivered', key: 'p/z.pdf' },
 		]);
 		expect(u.s3.types.get('p/z.pdf')).toBe('application/pdf');
+	});
+});
+
+describe('sendGroup — I15 in a mixed group (design 4-2, 4-5)', () => {
+	const pdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		pubItem(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'p/a.pdf', preparedKey: 'p/a.pdf', ...over });
+
+	it('puts only the confirmed items; an unconfirmed one never sent leaves with its record', async () => {
+		const s = await setup();
+		const deps = { ...s.deps, isConfirmed: (i: { id: string }) => i.id === 'a' };
+		expect(await sendGroup([pdf('a'), pdf('b')], undefined, deps)).toEqual(
+			expect.arrayContaining([
+				{ id: 'a', outcome: 'delivered', key: 'p/a.pdf' },
+				{ id: 'b', outcome: 'excluded', reason: 'needs-confirmation' },
+			]),
+		);
+		expect(s.s3.ops()).toEqual(['head:p/a.pdf', 'put:p/a.pdf']);
+		expect(s.pending.items.map((i) => i.id)).toEqual(['a']);
+	});
+
+	it('nothing confirmed: no Put at all', async () => {
+		const s = await setup();
+		await sendGroup([pdf('a'), pdf('b')], undefined, s.deps);
+		expect(s.s3.ops()).toEqual(['head:p/a.pdf']);
+		expect(s.pending.items).toEqual([]);
+	});
+
+	it('an unconfirmed item that was sent before stays stopped in a group of its own, even if every Put was rejected', async () => {
+		const s = await setup();
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		s.s3.on('put', timeout).on('put', timeout);
+		await sendGroup([pdf('a'), pdf('b')], undefined, { ...s.deps, isConfirmed: () => true });
+		expect(s.pending.items.map((i) => [i.id, i.state, i.putSent, i.groupId])).toEqual([
+			['a', 'indeterminate', true, 'g-1'],
+			['b', 'indeterminate', true, 'g-1'],
+		]);
+		s.s3.calls.length = 0;
+		const r = await resumeGroup(['a', 'b'], { ...s.deps, isConfirmed: (i) => i.id === 'a' });
+		expect(r).toEqual(expect.arrayContaining([{ id: 'a', outcome: 'delivered', key: 'p/a.pdf' }, { id: 'b', outcome: 'stopped', reason: 'needs-confirmation' }]));
+		const b = stateOf(s, 'b')!;
+		expect([b.state, b.reason, b.key, b.groupId === 'g-1']).toEqual(['stopped', 'needs-confirmation', 'p/a.pdf', false]);
 	});
 });

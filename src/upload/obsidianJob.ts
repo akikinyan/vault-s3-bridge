@@ -9,7 +9,7 @@ import type { StorageConnection } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
 import type { DecodedImage, Encoder } from './convert';
 import { type CacheView, type DetectSource, type Detection, detectEmbeds } from './detect';
-import { type CommandDeps, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
+import { type CommandDeps, type ConfirmChoice, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
 import type { PendingStore } from './pending';
 import { jobClients } from './clients';
 import type { EditorLike, NoteAccess } from './rewrite';
@@ -164,7 +164,7 @@ export interface UploadHost {
 
 export interface UploadUi {
 	pickConnection(): Promise<DeepReadonly<StorageConnection> | undefined>;
-	confirm(plan: JobPlan, preview: boolean): Promise<'replace' | 'copy' | undefined>;
+	confirm(plan: JobPlan, preview: boolean): Promise<ConfirmChoice | undefined>;
 	/** The stop button of the progress notice (10-4). */
 	stop: AbortSignal;
 }
@@ -264,7 +264,7 @@ function hashVaultFile(app: App, path: string): Promise<string | undefined> {
 }
 
 export interface ResumeUi {
-	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
+	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<readonly string[] | undefined>;
 	stop: AbortSignal;
 }
 

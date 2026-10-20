@@ -857,7 +857,7 @@ describe('uploadCommand (10-1)', () => {
 			authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
 			confirm: (_plan, preview) => {
 				calls.push(preview ? 'confirm:preview' : 'confirm');
-				return Promise.resolve('replace');
+				return Promise.resolve({ apply: 'replace' as const, confirmed: [] });
 			},
 			run: (plan, confirmed) => {
 				calls.push('run');
@@ -935,7 +935,7 @@ describe('uploadCommand (10-1)', () => {
 		const { deps } = command(w, {
 			confirm: async () => {
 				await w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, region: 'us-west-2' }, 'p'));
-				return 'replace';
+				return { apply: 'replace' as const, confirmed: [] };
 			},
 		});
 		const r = await uploadCommand(deps, false);
@@ -961,13 +961,15 @@ describe('resumableGroups (7-4)', () => {
 // --- resuming, copying (7-4) -----------------------------------------------------
 
 /** A job stopped by the stop button while its Put was in flight: the record stays as stopped and uncertain. */
-async function stoppedJob(w: World, note = '![[a.png]]', connection: StorageConnection = priv) {
+async function stoppedJob(w: World, note = '![[a.png]]', connection: StorageConnection = priv, confirmAll = false) {
 	const p = await plan(w, note, connection);
 	w.s3.on('put', (_key, signal) => {
 		w.abort.abort();
 		return Promise.reject(Object.assign(new Error('aborted'), { name: signal?.aborted ? 'AbortError' : 'Unexpected' }));
 	});
-	await runJob(p, confirm(w, connection), w.run);
+	const c = w.settings.current.connections.find((x) => x.id === connection.id)!;
+	const all = new Map(confirmAll ? p.groups.flatMap((g) => g.files.map((f) => [f.itemId, g.sentSha256] as const)) : []);
+	await runJob(p, confirmedValues(c, profileOf(w.settings.device, connection.id)?.generation, 'replace', all), w.run);
 	w.s3.calls.length = 0;
 	return p;
 }
@@ -985,7 +987,7 @@ const resumeCmd = (w: World, answer = true, lock = new JobLock()) => {
 				authGeneration: w.run.authGeneration,
 				confirm: (targets) => {
 					shown.push(targets.map((t) => t.groups.flat()));
-					return Promise.resolve(answer);
+					return Promise.resolve(answer ? [] : undefined);
 				},
 				run: (t, c) => resumeJob(t, c, resumeDeps(w)),
 			}),
@@ -1105,7 +1107,7 @@ describe('resume (7-4, 6-5)', () => {
 			authGeneration: w.run.authGeneration,
 			confirm: async () => {
 				await w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, region: 'us-east-1' }, 'p'));
-				return true;
+				return [];
 			},
 			run: (t, c) => resumeJob(t, c, resumeDeps(w)),
 		});
@@ -1356,7 +1358,7 @@ describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
 		w.s3.types.set(key, 'video/mp4');
 		const r = await runJob(p, confirm(w, pub), w.run);
 		// delivery-mismatch → the alternate key → 404 → a Put, which I15 refuses without a confirmation.
-		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['stopped', 'needs-confirmation']]);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'needs-confirmation']]);
 		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
 	});
 
@@ -1549,14 +1551,88 @@ describe('links and their Markdown in the job (design 5-4, 6-2, 6-4)', () => {
 		const note = ['| a | b |', '|---|---|', '| [[doc.pdf\\|50% off]] | ![[doc.pdf\\|300]] |', '', '![[doc.pdf]] [[doc.pdf|資料]]'].join('\n');
 		for (const c of [priv, pub]) {
 			const w = await on();
-			// Private: the Put is stopped by an abort; public: I15 refuses the Put. Either way the record stays.
-			const p = c === priv ? await stoppedJob(w, note) : await plan(w, note, pub);
-			if (c === pub) await runJob(p, confirm(w, pub), w.run);
+			// The Put is stopped by an abort, so the record stays (public: confirmed, or I15 would leave it out).
+			const p = await stoppedJob(w, note, c, true);
 			const conn = w.settings.current.connections.find((x) => x.id === c.id)!;
 			expect(w.pending.items).toHaveLength(1);
 			expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed', 'embed', 'link']);
 			expect(recordMarkdown(w.pending.items[0]!, conn)).toEqual([...new Set(mds(p))]);
 		}
+	});
+});
+
+describe('I15 from the screens (design 4-1, 4-3, 4-5)', () => {
+	const PDF = new Uint8Array(readFileSync(new URL('./fixtures/files/p-ok.pdf', import.meta.url)));
+	const pubWorld = async () => {
+		const w = await world([pub]);
+		w.prep = { ...w.prep, attachments: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/doc copy.pdf', PDF);
+		return w;
+	};
+
+	it('a confirmation counts only for an item on the screen and the bytes it showed', async () => {
+		const w = await pubWorld();
+		let seen: ReadonlyMap<string, string> | undefined;
+		const r = await uploadCommand(
+			{
+				lock: new JobLock(),
+				pending: w.pending,
+				settings: w.settings,
+				notePath: 'n.md',
+				pickConnection: () => Promise.resolve(w.settings.current.connections[0]),
+				detect: () => {
+					const p = parseEmbeds('![[doc.pdf]]');
+					if (!p.ok) throw new Error();
+					return Promise.resolve({ ...p, snapshot: '![[doc.pdf]]' });
+				},
+				prepare: w.prep,
+				authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
+				confirm: (plan) => Promise.resolve({ apply: 'copy' as const, confirmed: [plan.groups[0]!.files[0]!.itemId, 'not-on-screen'] }),
+				run: (plan, confirmed) => {
+					seen = confirmed.confirmations;
+					return runJob(plan, confirmed, w.run);
+				},
+			},
+			false,
+		);
+		expect('done' in r && r.done.files.map((f) => [f.outcome, f.reason])).toEqual([['delivered', undefined]]);
+		expect([...seen!.values()]).toEqual([sha256Hex(PDF)]);
+		expect(w.s3.types.get(w.s3.calls.find((c) => c.op === 'put')!.key)).toBe('application/pdf');
+		expect(w.copied[0]).toMatch(/^\[doc\.pdf\]\(https:\/\/cdn\.example\.com\//);
+	});
+
+	it('resuming two uncertain files, confirming one: the other is set aside and can be resumed alone later', async () => {
+		const w = await pubWorld();
+		const p = await plan(w, '![[doc.pdf]] ![[doc copy.pdf]]', pub);
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		w.s3.on('put', timeout).on('put', timeout);
+		const ids = p.groups[0]!.files.map((f) => f.itemId);
+		const all = new Map(ids.map((id) => [id, p.groups[0]!.sentSha256] as const));
+		const c = () => w.settings.current.connections.find((x) => x.id === pub.id)!;
+		await runJob(p, confirmedValues(c(), profileOf(w.settings.device, pub.id)?.generation, 'copy', all), w.run);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['indeterminate', 'indeterminate']);
+
+		const resume = (pick: string[]) =>
+			resumeCommand({
+				lock: new JobLock(),
+				pending: w.pending,
+				settings: w.settings,
+				authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
+				confirm: () => Promise.resolve(pick),
+				run: (t, cf) => resumeJob(t, cf, resumeDeps(w)),
+			});
+		await resume([ids[0]!]);
+		const [a, b] = ids.map((id) => w.pending.items.find((i) => i.id === id));
+		expect(a?.state).toBe('delivered');
+		expect([b?.state, b?.reason]).toEqual(['stopped', 'needs-confirmation']);
+		// A's record (delivered, waiting for its link) does not keep B from being resumed.
+		expect(resumableGroups(w.pending.items)).toEqual([[ids[1]]]);
+		w.s3.calls.length = 0;
+		await resume([ids[1]!]);
+		// The object A made is reused: same bytes, served as application/pdf.
+		expect(w.s3.calls.map((x) => x.op)).toEqual(['head']);
+		expect(w.pending.items.find((i) => i.id === ids[1])?.state).toBe('delivered');
 	});
 });
 

@@ -3,10 +3,10 @@
 import { type App, Modal, Notice, Setting } from 'obsidian';
 import { t } from '../i18n';
 import { jobClients } from '../upload/clients';
-import { copyDelivered, recordMarkdown, resumeCommand, type ResumeTarget, withLock } from '../upload/job';
+import { copyDelivered, needsConfirmation, recordMarkdown, resumeCommand, type ResumeTarget, withLock } from '../upload/job';
 import { copyToClipboard, resumeCommandDeps, type UploadHost } from '../upload/obsidianJob';
 import type { PendingItem, PendingResult, PendingStore } from '../upload/pending';
-import { copyLines, type Line, resumeLines } from '../upload/present';
+import { confirmExampleKey, copyLines, type Line, resumeLines } from '../upload/present';
 import type { DeepReadonly } from '../util/deepReadonly';
 import { confirm } from './ConfirmModal';
 
@@ -15,9 +15,11 @@ const notify = (lines: readonly Line[]) => {
 };
 
 /** I13: the files, keys and Markdown of every group about to be resumed. */
-function confirmResume(app: App, targets: readonly ResumeTarget[], items: DeepReadonly<PendingItem[]>, mismatched: number): Promise<boolean> {
+/** Design 4-3: the boxes of public files that need confirming start unticked; an earlier run's answer is not used. */
+function confirmResume(app: App, targets: readonly ResumeTarget[], items: DeepReadonly<PendingItem[]>, mismatched: number): Promise<readonly string[] | undefined> {
 	return new Promise((resolve) => {
 		let ok = false;
+		const confirmed = new Set<string>();
 		new (class extends Modal {
 			onOpen(): void {
 				this.setTitle(t('pending.resume.title'));
@@ -33,6 +35,17 @@ function confirmResume(app: App, targets: readonly ResumeTarget[], items: DeepRe
 						box.createDiv({ text: item.sourcePath });
 						box.createDiv({ cls: 'setting-item-description' }).createEl('code', { text: item.altKey ?? item.key });
 						for (const md of recordMarkdown(item, c) ?? []) box.createDiv().createEl('code', { text: md });
+						if (needsConfirmation(item)) {
+							box.createDiv({ cls: 'mod-warning', text: `⚠ ${t('upload.confirm.publicWarning')}` });
+							box.createDiv({ cls: 'setting-item-description', text: t(confirmExampleKey(item.format)) });
+							const label = box.createEl('label');
+							const check = label.createEl('input', { type: 'checkbox' });
+							label.appendText(` ${t('upload.confirm.publicCheck')}`);
+							check.addEventListener('change', () => {
+								if (check.checked) confirmed.add(item.id);
+								else confirmed.delete(item.id);
+							});
+						}
 					}
 				}
 				if (mismatched > 0) el.createEl('p', { cls: 'mod-warning', text: t('pending.resume.mismatched', { n: String(mismatched) }) });
@@ -51,7 +64,7 @@ function confirmResume(app: App, targets: readonly ResumeTarget[], items: DeepRe
 
 			onClose(): void {
 				this.contentEl.empty();
-				resolve(ok);
+				resolve(ok ? [...confirmed] : undefined);
 			}
 		})(app).open();
 	});

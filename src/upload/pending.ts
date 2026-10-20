@@ -382,6 +382,19 @@ export class PendingStore {
 		return this.remove(ids, (item) => !item.uncertain && !this.unsafe.has(item.id) && (item.state === 'recorded' || item.state === 'stopped'));
 	}
 
+	/**
+	 * Design 4-5: an item left out of a Put because the user did not confirm it (I15). Removed only when no Put of
+	 * it was ever sent; otherwise kept as stopped, in a group of its own so it can be resumed by itself later.
+	 */
+	removeIfNeverSent(ids: readonly string[]): Promise<PendingResult> {
+		return this.remove(ids, (item) => !item.putSent && !item.uncertain && !this.unsafe.has(item.id) && (item.state === 'recorded' || item.state === 'stopped'));
+	}
+
+	/** Design 4-5: the only change of groupId. The keys and the phase stay as they are. */
+	setAsideUnconfirmed(ids: readonly string[], groupId: string): Promise<PendingResult> {
+		return this.edit(ids, (item) => ({ ...item, state: 'stopped', reason: 'needs-confirmation', groupId }), { allowed: (item) => item.state !== 'putting' });
+	}
+
 	/** The user confirmed discarding the records (the UI warns that objects may remain). */
 	removeDiscarded(ids: readonly string[]): Promise<PendingResult> {
 		return this.remove(ids, () => true);

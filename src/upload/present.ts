@@ -3,7 +3,9 @@
 import type { MessageKey } from '../i18n';
 import type { PluginSettings } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
-import type { CommandStop, CopyResult, DeferredGroup, FileOutcome, JobPlan, JobResult, ResumeResult, ResumeStop, SkipReason } from './job';
+import type { UploadFormat } from '../settings/types';
+import { isImageFormat } from './fileType';
+import { type CommandStop, type CopyResult, type DeferredGroup, type FileOutcome, type JobPlan, type JobResult, needsConfirmation, type ResumeResult, type ResumeStop, type SkipReason } from './job';
 import { identifyingVariables, type KeyVariable } from './key';
 import type { PendingItem, PendingState } from './pending';
 import type { ItemOutcome } from './uploader';
@@ -15,7 +17,14 @@ export type RowStatus = 'new' | 'history' | 'shared' | 'deferred';
 export type RowWarning = 'public-copy-remains';
 
 export interface FileRow {
+	itemId: string;
 	sourcePath: string;
+	format: UploadFormat;
+	contentType: string;
+	/** Design 4-1: public, and of a format the user must confirm before it is put there (I15). */
+	needsConfirm: boolean;
+	/** The group may reuse an earlier object (a key from the history): it can end without a Put. */
+	candidate: boolean;
 	status: RowStatus;
 	key: string;
 	sourceSize: number;
@@ -51,7 +60,12 @@ export function planView(plan: JobPlan, settings: Pick<DeepReadonly<PluginSettin
 	const rows = (groups: readonly DeferredGroup[], deferred: boolean): FileRow[] =>
 		groups.flatMap((g) =>
 			g.files.map((f, i) => ({
+				itemId: f.itemId,
 				sourcePath: f.sourcePath,
+				format: g.format,
+				contentType: g.contentType,
+				needsConfirm: !deferred && needsConfirmation({ classification: t.classification, format: g.format }),
+				candidate: g.phase === 'candidate',
 				status: deferred ? 'deferred' : i > 0 ? 'shared' : g.phase === 'candidate' ? 'history' : 'new',
 				key: g.key,
 				sourceSize: f.sourceSize,
@@ -72,6 +86,35 @@ export function planView(plan: JobPlan, settings: Pick<DeepReadonly<PluginSettin
 		sendBytes: plan.groups.reduce((n, g) => n + g.size, 0),
 		sendable: plan.groups.length > 0,
 	};
+}
+
+/**
+ * Design 9-2: the send buttons work only if a row can be sent: it needs no confirmation, the user confirmed it, or it
+ * may reuse an earlier object. A row confirmed for nothing but a fresh Put is not enough on its own.
+ */
+export function canSend(view: Pick<PlanView, 'rows'>, confirmed: ReadonlySet<string>): boolean {
+	return view.rows.some((r) => r.status !== 'deferred' && (!r.needsConfirm || confirmed.has(r.itemId) || r.candidate));
+}
+
+/** Design 9-2: the format shown for a file other than an image; undefined for images (Phase 3 rows). */
+export function formatKey(format: UploadFormat): MessageKey | undefined {
+	return isImageFormat(format) ? undefined : (`format.${format}` as MessageKey);
+}
+
+/** Design 4-4: the example line under the shared warning, by format. */
+export function confirmExampleKey(format: UploadFormat): MessageKey {
+	switch (format) {
+		case 'pdf':
+			return 'upload.confirmExample.pdf';
+		case 'docx':
+		case 'xlsx':
+		case 'pptx':
+			return 'upload.confirmExample.office';
+		case 'zip':
+			return 'upload.confirmExample.zip';
+		default:
+			return 'upload.confirmExample.media';
+	}
 }
 
 export interface Line {
