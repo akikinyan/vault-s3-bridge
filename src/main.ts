@@ -24,6 +24,7 @@ import { ConnectionPickerModal } from './ui/ConnectionPickerModal';
 import { ConnectionTestModal } from './ui/ConnectionTestModal';
 import { editTarget, InsertReferenceModal } from './ui/InsertReferenceModal';
 import { PreviewModal } from './ui/PreviewModal';
+import { openRestore, runArchiveCommand } from './ui/archiveFlow';
 import { runUploadCommand, uploadTarget } from './ui/uploadFlow';
 
 const SWEEP_INTERVAL_MS = 30_000;
@@ -118,6 +119,8 @@ export default class VaultS3BridgePlugin extends Plugin {
 		});
 		this.addCommand({ id: 'upload-current-note', name: t('command.upload'), callback: () => void this.upload(false) });
 		this.addCommand({ id: 'preview-upload', name: t('command.previewUpload'), callback: () => void this.upload(true) });
+		this.addCommand({ id: 'archive-uploaded', name: t('command.archive'), callback: () => void this.archive() });
+		this.addCommand({ id: 'restore-archived', name: t('command.restoreArchived'), callback: () => openRestore(this.uploadHost) });
 	}
 
 	/**
@@ -159,6 +162,10 @@ export default class VaultS3BridgePlugin extends Plugin {
 		}
 		await runUploadCommand(this.uploadHost, file, preview);
 		this.settingTab?.update();
+	}
+
+	private async archive(): Promise<void> {
+		await runArchiveCommand(this.uploadHost);
 	}
 
 	private insertReference(): void {

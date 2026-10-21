@@ -108,12 +108,13 @@ class AuthStop extends Error {
 const isAuth = (category: ErrorCategory) => category === 'sso-login-required' || category === 'profile-config';
 
 /**
- * Design 8-6: the content of every path reported modified is still what was searched (an open editor's content
- * included). A path the scan did not see counts as changed.
+ * Design 8-6: the content of every path reported modified, and of every open view, is still what was searched. Open
+ * views are always compared: a Canvas edited in memory reports nothing until it is saved. A path the scan did not
+ * see counts as changed.
  */
 export async function contentsUnchanged(vault: ArchiveVault, snapshot: ScanSnapshot, paths: Iterable<string>): Promise<boolean> {
 	const editors = new Map(vault.editors().map((e) => [pathKey(e.path), e.text]));
-	for (const key of paths) {
+	for (const key of new Set([...paths, ...editors.keys()])) {
 		const before = snapshot.files.get(key);
 		const text = editors.get(key);
 		if (text !== undefined && sha256Hex(text) !== (snapshot.editors.get(key) ?? before?.sha256)) return false;

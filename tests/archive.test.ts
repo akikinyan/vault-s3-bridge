@@ -241,6 +241,26 @@ describe('nothing moves once the vault changed (8-6, I20)', () => {
 		expect(await archiveCommand(v.deps)).toEqual({ stop: 'changed' });
 	});
 
+	it('a view changed in memory without any event (an unsaved Canvas) stops it', async () => {
+		const w = await threeUploaded();
+		w.data.set('b.canvas', bytes('{"nodes":[]}'));
+		w.editors.push({ path: 'b.canvas', text: '{"nodes":[]}' });
+		w.onConfirm = (plan) => {
+			w.editors[0]!.text = '{"nodes":[{"type":"file","file":"att/x/a.pdf"}]}';
+			return plan.candidates.map((c) => c.path);
+		};
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'changed' });
+	});
+
+	it('a view opened after the scan on an unchanged file does not stop it', async () => {
+		const w = await threeUploaded();
+		w.onConfirm = (plan) => {
+			w.editors.push({ path: 'n.md', text: 'no links' });
+			return plan.candidates.map((c) => c.path);
+		};
+		expect(await archiveCommand(w.deps)).toMatchObject({ done: { moved: ['att/x/a.pdf', 'att/y/b.pdf', 'att/y/z/c.pdf'] } });
+	});
+
 	it('typing into an open editor after the scan stops it', async () => {
 		const w = await threeUploaded();
 		w.editors.push({ path: 'n.md', text: 'no links' });
