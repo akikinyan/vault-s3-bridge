@@ -11,10 +11,23 @@ export const PAGE_PIXELS = 16_000_000;
 export const TOTAL_PIXELS = 48_000_000;
 /** Used when the page has no width yet (not laid out). */
 const FALLBACK_WIDTH = 800;
+/**
+ * The data files bundled with Obsidian's pdf.js, as its own PDF viewer passes them. Without the CMaps, fonts
+ * such as the Japanese CID fonts have no glyphs. All are local app files: nothing is fetched from outside.
+ */
+const PDFJS_DATA = {
+	cMapUrl: '/lib/pdfjs/cmaps/',
+	cMapPacked: true,
+	standardFontDataUrl: '/lib/pdfjs/standard_fonts/',
+	wasmUrl: '/lib/pdfjs/wasm/',
+	iccUrl: '/lib/pdfjs/iccs/',
+} as const;
 
 /** The part of pdf.js (from Obsidian's `loadPdfJs()`) that is used. */
 export interface PdfJs {
-	getDocument(source: { data: Uint8Array; isEvalSupported: false; enableXfa: false; disableFontFace: false; ownerDocument: Document }): PdfLoadingTask;
+	getDocument(
+		source: { data: Uint8Array; isEvalSupported: false; enableXfa: false; disableFontFace: false; ownerDocument: Document } & typeof PDFJS_DATA,
+	): PdfLoadingTask;
 	AnnotationMode?: { DISABLE: number };
 }
 
@@ -123,8 +136,6 @@ function defaultObserve(el: HTMLElement, onChange: (entries: readonly Intersecti
  */
 export function renderPdf(content: PreviewPdf, deps: PdfDeps): Display {
 	const box = createDiv({ cls: 'vault-s3-bridge-pdf' });
-	// The canvas menu has no save item, but nothing is offered at all (I16).
-	box.addEventListener('contextmenu', (e) => e.preventDefault());
 	const budget = deps.budget();
 	const pages = new Map<Element, PageView>();
 	let disposed = false;
@@ -227,6 +238,7 @@ export function renderPdf(content: PreviewPdf, deps: PdfDeps): Display {
 				enableXfa: false,
 				disableFontFace: false,
 				ownerDocument: box.ownerDocument,
+				...PDFJS_DATA,
 			});
 			task = current;
 			// No password field is ever shown (O2): the document is closed and the information card is shown.

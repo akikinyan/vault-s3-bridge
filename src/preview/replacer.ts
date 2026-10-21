@@ -80,21 +80,29 @@ export class ImageReplacer {
 					img.setAttribute('src', shown.url);
 					return;
 				}
-				const display = this.renderOther(shown, src);
-				img.addClass(HIDDEN);
-				img.insertAdjacentElement('afterend', display.el);
-				this.placeholders.set(img, display);
+				this.insertAfter(img, this.renderOther(shown, src));
 			},
 			(error: unknown) => {
 				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
 				if (!(error instanceof PreviewError) || error.code === 'aborted') return;
-				const placeholder = this.renderPlaceholder(error, src);
-				img.addClass(HIDDEN);
-				img.insertAdjacentElement('afterend', placeholder);
-				this.placeholders.set(img, { el: placeholder });
+				this.insertAfter(img, { el: this.renderPlaceholder(error, src) });
 			},
 		);
+	}
+
+	/**
+	 * Puts a display right after the hidden img. Its right-click never reaches the editor's image menu around it,
+	 * whose items act on the `s3-bridge:` URL itself (copy fetches it) or on the note (remove).
+	 */
+	private insertAfter(img: HTMLImageElement, display: Display): void {
+		display.el.addEventListener('contextmenu', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		});
+		img.addClass(HIDDEN);
+		img.insertAdjacentElement('afterend', display.el);
+		this.placeholders.set(img, display);
 	}
 
 	/**

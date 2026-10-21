@@ -184,6 +184,8 @@ describe('renderPdf (7-2)', () => {
 		expect(content.bytes.byteLength).toBe(8);
 		expect(t.log.received).toEqual([8, 8]);
 		expect(t.log.sources[0]).toMatchObject({ isEvalSupported: false, enableXfa: false, disableFontFace: false, ownerDocument: document });
+		// Obsidian's bundled data files, as its own viewer uses them: without the CMaps CID fonts have no glyphs.
+		expect(t.log.sources[0]).toMatchObject({ cMapUrl: '/lib/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: '/lib/pdfjs/standard_fonts/' });
 	});
 
 	it('draws only pages in view, without annotations, within the page limit', async () => {
@@ -329,6 +331,12 @@ describe('the replacer and a PDF (7-7)', () => {
 		t.io.show([0]);
 		await flush();
 		expect(img.nextElementSibling?.className).toBe('vault-s3-bridge-pdf');
+		// The editor's image menu (copy fetches the s3-bridge URL, remove edits the note) never sees a right-click.
+		let reached = 0;
+		document.body.addEventListener('contextmenu', () => reached++);
+		const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+		img.nextElementSibling!.dispatchEvent(menu);
+		expect([reached, menu.defaultPrevented]).toEqual([0, true]);
 		expect(t.budget.used).toBeGreaterThan(0);
 		replacer.release(img);
 		expect(img.nextElementSibling).toBeNull();
