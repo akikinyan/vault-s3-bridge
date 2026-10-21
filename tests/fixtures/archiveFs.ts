@@ -9,8 +9,10 @@ export type Entry = Uint8Array | { size: number } | typeof UNREADABLE;
 export function memoryFs(files: Record<string, Entry | string>, failList: string[] = []) {
 	const data = new Map<string, Entry>(Object.entries(files).map(([p, v]) => [p, typeof v === 'string' ? new TextEncoder().encode(v) : v]));
 	const reads: string[] = [];
+	/** Folders made empty (by createFolder); others come from the files in them. */
+	const made = new Set<string>();
 	const folders = () => {
-		const set = new Set<string>();
+		const set = new Set<string>(made);
 		for (const p of data.keys()) {
 			const parts = p.split('/');
 			for (let i = 1; i < parts.length; i++) set.add(parts.slice(0, i).join('/'));
@@ -40,5 +42,5 @@ export function memoryFs(files: Record<string, Entry | string>, failList: string
 			return e.slice(0, bytes);
 		},
 	};
-	return { fs, reads, data };
+	return { fs, reads, data, made, folders };
 }
