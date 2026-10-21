@@ -14,6 +14,12 @@ const INFO_KEY: Record<PreviewInfo['type'], MessageKey> = {
 	other: 'preview.info.other',
 };
 
+const REASON_KEY: Record<NonNullable<PreviewInfo['reason']>, MessageKey> = {
+	mismatch: 'preview.info.mismatch',
+	password: 'preview.pdf.password',
+	broken: 'preview.pdf.broken',
+};
+
 /** Text through textContent only: nothing in it is ever parsed as markup (I17). */
 export function renderText(content: PreviewText): HTMLElement {
 	const box = createDiv({ cls: 'vault-s3-bridge-text-box' });
@@ -28,10 +34,6 @@ export function renderInfo(content: PreviewInfo): HTMLElement {
 	box.createDiv({ cls: 'vault-s3-bridge-info-name', text: content.name });
 	const meta = [t(INFO_KEY[content.type]), ...(content.size === undefined ? [] : [formatBytes(content.size)])];
 	box.createDiv({ cls: 'vault-s3-bridge-info-meta', text: meta.join(' · ') });
-	if (content.mismatch) box.createDiv({ cls: 'vault-s3-bridge-info-meta', text: t('preview.info.mismatch') });
+	if (content.reason) box.createDiv({ cls: 'vault-s3-bridge-info-meta', text: t(REASON_KEY[content.reason]) });
 	return box;
-}
-
-export function renderContent(content: PreviewText | PreviewInfo): HTMLElement {
-	return content.kind === 'text' ? renderText(content) : renderInfo(content);
 }

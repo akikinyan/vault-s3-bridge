@@ -16,6 +16,12 @@ export function installObsidianDomHelpers(): void {
 	el.hasClass = function (this: Element, cls: string) {
 		return this.classList.contains(cls);
 	};
+	el.empty = function (this: Element) {
+		this.replaceChildren();
+	};
+	el.setCssProps = function (this: HTMLElement, props: Record<string, string>) {
+		for (const [k, v] of Object.entries(props)) this.style.setProperty(k, v);
+	};
 	type Options = { cls?: string | string[]; text?: string; type?: string };
 	const make = (tag: string, o: Options = {}) => {
 		const e = document.createElement(tag);

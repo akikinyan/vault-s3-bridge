@@ -1,16 +1,13 @@
 import { REFERENCE_SCHEME } from '../reference/reference';
-import { renderContent } from './content';
+import { contentRenderer, type ContentRenderer, type Display } from './display';
 import { PreviewError } from './errors';
-import type { Lease, PreviewInfo, PreviewText } from './service';
+import type { Lease } from './service';
 
 export interface LeaseSource {
 	acquire(src: string): Lease;
 }
 
 export type PlaceholderRenderer = (error: PreviewError, reference: string) => HTMLElement;
-
-/** Design 7-7: a display put right after the hidden `img` for what is not drawn by the `img` itself. */
-export type ContentRenderer = (content: PreviewText | PreviewInfo, reference: string) => HTMLElement;
 
 const LOADING = 'vault-s3-bridge-loading';
 const HIDDEN = 'vault-s3-bridge-hidden';
@@ -31,7 +28,7 @@ function imagesIn(node: Node): HTMLImageElement[] {
 export class ImageReplacer {
 	private readonly leases = new Map<HTMLImageElement, Lease>();
 	private readonly ownSrc = new WeakMap<HTMLImageElement, string | null>();
-	private readonly placeholders = new WeakMap<HTMLImageElement, HTMLElement>();
+	private readonly placeholders = new WeakMap<HTMLImageElement, Display>();
 	/** Images seen attached to a document at least once. */
 	private readonly connectedOnce = new WeakSet<HTMLImageElement>();
 	/** Never-attached images found detached by the previous sweep. */
@@ -40,7 +37,7 @@ export class ImageReplacer {
 	constructor(
 		private readonly source: () => LeaseSource,
 		private readonly renderPlaceholder: PlaceholderRenderer,
-		private readonly renderOther: ContentRenderer = renderContent,
+		private readonly renderOther: ContentRenderer = contentRenderer(),
 	) {}
 
 	/** Handles every image in a newly added or rendered subtree. */
@@ -77,7 +74,7 @@ export class ImageReplacer {
 			(shown) => {
 				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
-				// An image and an SVG are drawn by the img; text and information go right after it (7-7).
+				// An image and an SVG are drawn by the img; text, a PDF and information go right after it (7-7).
 				if (!('kind' in shown) || shown.kind === 'svg') {
 					this.ownSrc.set(img, shown.url);
 					img.setAttribute('src', shown.url);
@@ -85,7 +82,7 @@ export class ImageReplacer {
 				}
 				const display = this.renderOther(shown, src);
 				img.addClass(HIDDEN);
-				img.insertAdjacentElement('afterend', display);
+				img.insertAdjacentElement('afterend', display.el);
 				this.placeholders.set(img, display);
 			},
 			(error: unknown) => {
@@ -95,7 +92,7 @@ export class ImageReplacer {
 				const placeholder = this.renderPlaceholder(error, src);
 				img.addClass(HIDDEN);
 				img.insertAdjacentElement('afterend', placeholder);
-				this.placeholders.set(img, placeholder);
+				this.placeholders.set(img, { el: placeholder });
 			},
 		);
 	}
@@ -109,8 +106,11 @@ export class ImageReplacer {
 		this.leases.get(img)?.release();
 		this.leases.delete(img);
 		this.ownSrc.delete(img);
-		this.placeholders.get(img)?.remove();
+		const display = this.placeholders.get(img);
 		this.placeholders.delete(img);
+		display?.el.remove();
+		// A PDF's document, canvases and pixels go with it (7-7).
+		display?.dispose?.();
 		img.removeClass(LOADING);
 		img.removeClass(HIDDEN);
 		if (ours) img.removeAttribute('src');

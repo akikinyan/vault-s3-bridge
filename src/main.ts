@@ -1,10 +1,11 @@
 import type { NodeHttpHandler } from '@smithy/node-http-handler';
 import { join } from 'node:path';
-import { FileSystemAdapter, getLanguage, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
+import { FileSystemAdapter, getLanguage, loadPdfJs, MarkdownRenderChild, Notice, Plugin } from 'obsidian';
 import { setLanguage, t, type MessageKey } from './i18n';
 import { type CommandRegistry, guardLinkCommands, LinkGuard, s3LinkAt } from './preview/linkGuard';
 import { livePreviewExtension } from './preview/livePreview';
 import { renderPlaceholder } from './preview/placeholder';
+import { contentRenderer, type ContentRenderer } from './preview/display';
 import { ImageReplacer } from './preview/replacer';
 import type { PreviewService } from './preview/service';
 import { createPreviewStack } from './preview/stack';
@@ -49,6 +50,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 	preview!: PreviewService;
 	private handler!: NodeHttpHandler;
 	private replacer!: ImageReplacer;
+	private renderOther!: ContentRenderer;
 	private settingTab?: VaultS3BridgeSettingTab;
 	private readonly insertModals = new Set<InsertReferenceModal>();
 	/** Upload resume records of this device; undefined where the plugin folder is not on the file system. */
@@ -94,7 +96,8 @@ export default class VaultS3BridgePlugin extends Plugin {
 		this.pending = this.pluginFile('.', (dir) => new PendingStore(nodePendingIO(dir), this.store.device.deviceId));
 		await this.pending?.load();
 		this.createPreview();
-		this.replacer = new ImageReplacer(() => this.preview, renderPlaceholder);
+		this.renderOther = contentRenderer({ loadPdfJs, budget: () => this.preview.pixels });
+		this.replacer = new ImageReplacer(() => this.preview, renderPlaceholder, this.renderOther);
 
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			this.replacer.processTree(el);
@@ -122,7 +125,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 	 * guarded, including popouts already open when the plugin loads; everything is put back on unload.
 	 */
 	private guardLinks(): void {
-		const openPreview = (url: string) => new PreviewModal(this.app, url, () => this.preview).open();
+		const openPreview = (url: string) => new PreviewModal(this.app, url, () => this.preview, this.renderOther).open();
 		const guard = new LinkGuard({ openPreview });
 		this.register(() => guard.dispose());
 		guard.install(window);

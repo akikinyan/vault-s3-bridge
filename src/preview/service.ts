@@ -11,6 +11,7 @@ import { FAILURE_TTL_MS, toPreviewError, type SharedCredentials } from './creden
 import { classifyContent, extensionOf } from '../upload/fileType';
 import { detectImage } from './imageInfo';
 import { Limiter } from './limiter';
+import { PixelBudget } from './pdf';
 
 export interface PreviewImage {
 	url: string;
@@ -38,14 +39,25 @@ export interface PreviewInfo {
 	name: string;
 	size: number | undefined;
 	type: InfoType;
-	/** The bytes did not match the format chosen from the key (7-1 step 2). */
-	mismatch?: true;
+	/**
+	 * Why something that could be shown is not: the bytes did not match the format chosen from the key (7-1
+	 * step 2), or pdf.js asked for a password or could not read the PDF (7-2).
+	 */
+	reason?: 'mismatch' | 'password' | 'broken';
+}
+
+/** Design 7-2: drawn by pdf.js from a copy of these cached bytes. */
+export interface PreviewPdf {
+	kind: 'pdf';
+	name: string;
+	size: number;
+	bytes: Uint8Array;
 }
 
 export type InfoType = 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'zip' | 'audio' | 'video' | 'other';
 
 /** An image (as in Phase 2) or one of the other displays of design 7-2. */
-export type PreviewContent = PreviewImage | PreviewText | PreviewSvg | PreviewInfo;
+export type PreviewContent = PreviewImage | PreviewText | PreviewSvg | PreviewInfo | PreviewPdf;
 
 /** Design 7-2: the first part of a text that is shown, in UTF-16 code units. */
 export const TEXT_PREVIEW_UNITS = 262_144;
@@ -64,15 +76,15 @@ const INFO_TYPE: Record<string, InfoType> = {
 
 /**
  * Design 7-1 step 1: how an object is shown, from its key alone, before anything is fetched. `head` asks Head
- * first (a key without an extension); `info` fetches nothing but Head. PDFs are shown as information until they
- * can be drawn.
+ * first (a key without an extension); `info` fetches nothing but Head.
  */
-export type PreviewPolicy = 'image' | 'svg' | 'text' | 'info' | 'head';
+export type PreviewPolicy = 'image' | 'svg' | 'text' | 'pdf' | 'info' | 'head';
 
 export function policyOf(key: string): PreviewPolicy {
 	const ext = extensionOf(key);
 	if (IMAGE_EXTENSIONS.includes(ext)) return 'image';
 	if (ext === 'svg') return 'svg';
+	if (ext === 'pdf') return 'pdf';
 	if (TEXT_EXTENSIONS.includes(ext)) return 'text';
 	return ext === '' ? 'head' : 'info';
 }
@@ -80,6 +92,7 @@ export function policyOf(key: string): PreviewPolicy {
 /** Design 7-1 step 1 for a key without an extension: the Content-Type chooses a policy only, never the format. */
 export function policyOfContentType(contentType: string | undefined): Exclude<PreviewPolicy, 'head'> {
 	const t = (contentType ?? '').toLowerCase();
+	if (t === 'application/pdf') return 'pdf';
 	if (t === 'image/svg+xml') return 'svg';
 	if (t.startsWith('text/plain')) return 'text';
 	if (t.startsWith('image/')) return 'image';
@@ -184,6 +197,8 @@ export class PreviewService {
 	private readonly limiter: Limiter;
 	private readonly checks = new Set<Check>();
 	private destroyed = false;
+	/** Design 7-3: the pixels of drawn PDF pages, shared by every PDF preview. */
+	readonly pixels = new PixelBudget();
 
 	constructor(private readonly deps: PreviewServiceDeps) {
 		this.limiter = new Limiter(deps.concurrency ?? 3);
@@ -258,12 +273,13 @@ export class PreviewService {
 				const credentials = await this.deps.credentials.get(r.connection.id, r.generation, r.profile, r.connection.region, signal);
 				const s3 = this.deps.s3For(r.connection, credentials);
 				const head = () => s3.send(new HeadObjectCommand({ Bucket: r.connection.bucket, Key: r.key }), { abortSignal: signal });
+				const name = r.key.slice(r.key.lastIndexOf('/') + 1);
 				const info = (size: number | undefined, mismatch = false): PreviewInfo => ({
 					kind: 'info',
-					name: r.key.slice(r.key.lastIndexOf('/') + 1),
+					name,
 					size,
 					type: INFO_TYPE[extensionOf(r.key)] ?? 'other',
-					...(mismatch ? { mismatch: true as const } : {}),
+					...(mismatch ? { reason: 'mismatch' as const } : {}),
 				});
 				let policy = policyOf(r.key);
 				let headSize: number | undefined;
@@ -278,7 +294,8 @@ export class PreviewService {
 					// Design 7-1: neither downloaded nor opened; Head tells its size.
 					shown = info(headSize ?? (await head()).ContentLength);
 				} else {
-					const maxBytes = (policy === 'text' ? settings.preview.maxTextMB : settings.preview.maxFileMB) * MB;
+					const maxMB = policy === 'text' ? settings.preview.maxTextMB : policy === 'pdf' ? settings.preview.maxPdfMB : settings.preview.maxFileMB;
+					const maxBytes = maxMB * MB;
 					const response = await s3.send(new GetObjectCommand({ Bucket: r.connection.bucket, Key: r.key }), { abortSignal: signal });
 					if ((response.ContentLength ?? 0) > maxBytes) {
 						// Nothing was read yet: free the connection instead of leaving the body dangling.
@@ -298,6 +315,9 @@ export class PreviewService {
 					} else if (classifyContent(bytes) !== policy) {
 						// 7-1 step 2: the bytes decide; the key or another tool's Content-Type never does.
 						shown = info(bytes.length, true);
+					} else if (policy === 'pdf') {
+						// Kept as fetched; each display hands pdf.js its own copy (7-1 step 3).
+						shown = { kind: 'pdf', name, size: bytes.length, bytes };
 					} else if (policy === 'svg') {
 						url = this.deps.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'image/svg+xml' }));
 						shown = { kind: 'svg', url };

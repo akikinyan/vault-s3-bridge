@@ -25,7 +25,8 @@ describe('policyOf (design 7-1 step 1)', () => {
 		['data.json', 'text'],
 		['a', 'head'],
 		['dir.v1/a', 'head'],
-		['a.pdf', 'info'],
+		['a.pdf', 'pdf'],
+		['A.PDF', 'pdf'],
 		['a.docx', 'info'],
 		['a.heic', 'info'],
 	])('%s → %s', (key, policy) => {
@@ -37,7 +38,7 @@ describe('policyOf (design 7-1 step 1)', () => {
 			'svg',
 			'text',
 			'image',
-			'info',
+			'pdf',
 			'info',
 			'info',
 		]);
@@ -50,12 +51,33 @@ describe('PreviewService — what is fetched (7-1)', () => {
 		expect(await t.service.acquire(ref('IMG_0001.JPG')).result).toMatchObject({ width: 10, height: 10 });
 	});
 
-	it('PDF, Office, archives and media are never downloaded: Head only, shown as information', async () => {
-		const t = setupService({ send: objects({ 'k/a.pdf': { bytes: file('p-ok.pdf') }, 'k/b.mp4': { bytes: file('v-mp4.mp4') }, 'k/c.heic': { bytes: new Uint8Array(9) } }) });
-		expect(await t.service.acquire(ref('k/a.pdf')).result).toEqual({ kind: 'info', name: 'a.pdf', size: file('p-ok.pdf').length, type: 'pdf' });
+	it('Office, archives and media are never downloaded: Head only, shown as information', async () => {
+		const t = setupService({ send: objects({ 'k/a.docx': { bytes: new Uint8Array(7) }, 'k/b.mp4': { bytes: file('v-mp4.mp4') }, 'k/c.heic': { bytes: new Uint8Array(9) } }) });
+		expect(await t.service.acquire(ref('k/a.docx')).result).toEqual({ kind: 'info', name: 'a.docx', size: 7, type: 'docx' });
 		expect(await t.service.acquire(ref('k/b.mp4')).result).toMatchObject({ kind: 'info', type: 'video' });
 		expect(await t.service.acquire(ref('k/c.heic')).result).toMatchObject({ kind: 'info', type: 'other' });
 		expect(t.gets()).toEqual([]);
+	});
+
+	it('a PDF is fetched and kept as bytes only if the bytes are a PDF (7-1, 7-2)', async () => {
+		const pdf = file('p-ok.pdf');
+		const t = setupService({ send: objects({ 'k/a.pdf': { bytes: pdf }, 'k/b.pdf': { bytes: file('a-img.svg') }, 'k/doc': { bytes: pdf, type: 'application/pdf' } }) });
+		expect(await t.service.acquire(ref('k/a.pdf')).result).toEqual({ kind: 'pdf', name: 'a.pdf', size: pdf.length, bytes: pdf });
+		expect(await t.service.acquire(ref('k/b.pdf')).result).toMatchObject({ kind: 'info', type: 'pdf', reason: 'mismatch' });
+		expect(await t.service.acquire(ref('k/doc')).result).toMatchObject({ kind: 'pdf', name: 'doc' });
+		expect(t.gets().map((g) => g.key)).toEqual(['k/a.pdf', 'k/b.pdf', 'k/doc']);
+	});
+
+	it('a PDF is limited by maxPdfMB, not maxFileMB', async () => {
+		const head = new TextEncoder().encode('%PDF-1.7\n');
+		const big = new Uint8Array(30 * 1024 * 1024).fill(0x20);
+		big.set(head);
+		const t = setupService({ send: objects({ 'k/a.pdf': { bytes: big } }) });
+		expect(await t.service.acquire(ref('k/a.pdf')).result).toMatchObject({ kind: 'pdf', size: big.length });
+		const over = new Uint8Array(51 * 1024 * 1024);
+		over.set(head);
+		const u = setupService({ send: objects({ 'k/a.pdf': { bytes: over } }) });
+		await expect(u.service.acquire(ref('k/a.pdf')).result).rejects.toMatchObject({ code: 'too-large' });
 	});
 
 	it('text and SVG are fetched and shown only if the bytes are what the key says', async () => {
@@ -68,9 +90,9 @@ describe('PreviewService — what is fetched (7-1)', () => {
 			}),
 		});
 		expect(await t.service.acquire(ref('k/a.txt')).result).toMatchObject({ kind: 'text', truncated: false });
-		expect(await t.service.acquire(ref('k/b.txt')).result).toMatchObject({ kind: 'info', mismatch: true });
+		expect(await t.service.acquire(ref('k/b.txt')).result).toMatchObject({ kind: 'info', reason: 'mismatch' });
 		expect(await t.service.acquire(ref('k/c.svg')).result).toEqual({ kind: 'svg', url: 'blob:test/1' });
-		expect(await t.service.acquire(ref('k/d.svg')).result).toMatchObject({ kind: 'info', mismatch: true });
+		expect(await t.service.acquire(ref('k/d.svg')).result).toMatchObject({ kind: 'info', reason: 'mismatch' });
 	});
 
 	it('a key without an extension: Head chooses, the bytes decide; other Content-Types fetch nothing', async () => {
@@ -84,7 +106,7 @@ describe('PreviewService — what is fetched (7-1)', () => {
 		});
 		expect(await t.service.acquire(ref('k/img')).result).toMatchObject({ width: 10 });
 		expect(await t.service.acquire(ref('k/note')).result).toMatchObject({ kind: 'text' });
-		expect(await t.service.acquire(ref('k/lie')).result).toMatchObject({ kind: 'info', mismatch: true });
+		expect(await t.service.acquire(ref('k/lie')).result).toMatchObject({ kind: 'info', reason: 'mismatch' });
 		expect(await t.service.acquire(ref('k/blob')).result).toMatchObject({ kind: 'info', type: 'other' });
 		expect(t.gets().map((g) => g.key)).toEqual(['k/img', 'k/note', 'k/lie']);
 	});
