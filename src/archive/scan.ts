@@ -55,7 +55,8 @@ export interface ScanSnapshot {
 	editors: Map<string, string>;
 }
 
-export type IncompleteReason = 'too-large' | 'unreadable' | 'canvas';
+/** not-listed: a file the vault lists was not found by walking the folder, so the walk cannot be trusted. */
+export type IncompleteReason = 'too-large' | 'unreadable' | 'canvas' | 'not-listed';
 
 /** Design 8-3 / I19: the collection could not be completed, so nothing may be archived. */
 export class ScanIncomplete extends Error {

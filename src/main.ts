@@ -120,7 +120,7 @@ export default class VaultS3BridgePlugin extends Plugin {
 		this.addCommand({ id: 'upload-current-note', name: t('command.upload'), callback: () => void this.upload(false) });
 		this.addCommand({ id: 'preview-upload', name: t('command.previewUpload'), callback: () => void this.upload(true) });
 		this.addCommand({ id: 'archive-uploaded', name: t('command.archive'), callback: () => void this.archive() });
-		this.addCommand({ id: 'restore-archived', name: t('command.restoreArchived'), callback: () => openRestore(this.uploadHost) });
+		this.addCommand({ id: 'restore-archived', name: t('command.restoreArchived'), callback: () => void openRestore(this.uploadHost) });
 	}
 
 	/**

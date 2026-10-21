@@ -408,6 +408,7 @@ export const ja: Record<MessageKey, string> = {
 	'archive.stop.marker-invalid': '退避フォルダの目印が欠けているか壊れているため、このフォルダは使いません。',
 	'archive.stop.incomplete-too-large': '参照を確認できませんでした：{path} が大きすぎて検索できません（20 MB 超）。退避していません。',
 	'archive.stop.incomplete-unreadable': '参照を確認できませんでした：{path} を読み込めません。退避していません。',
+	'archive.stop.incomplete-not-listed': '参照を確認できませんでした：Vault のフォルダを読んだときに {path} が見つかりませんでした。退避していません。',
 	'archive.stop.incomplete-canvas': '参照を確認できませんでした：Canvas {path} を読み取れません。退避していません。',
 	'archive.stop.auth': 'ストレージに接続できませんでした：{reason} 退避していません。',
 	'archive.stop.nothing': '退避できるファイルはありません。',

@@ -4,7 +4,7 @@ import { type App, type ButtonComponent, Modal, Notice, Setting } from 'obsidian
 import { type ArchivePlan, type ArchiveStop, archiveCommand, type ExcludedReason } from '../archive/archive';
 import { archiveCommandDeps, archiveVault } from '../archive/obsidianArchive';
 import { ARCHIVE_FOLDER } from '../archive/paths';
-import { archivedFiles, restoreFiles } from '../archive/restore';
+import { archivedFiles, archiveMarker, restoreFiles } from '../archive/restore';
 import { t, type MessageKey } from '../i18n';
 import type { UploadHost } from '../upload/obsidianJob';
 import { formatBytes } from '../upload/present';
@@ -159,11 +159,22 @@ export async function runArchiveCommand(host: UploadHost): Promise<void> {
 	}
 }
 
-/** Design 8-8: archived files to choose from; the chosen ones go back where they were. */
-export function openRestore(host: Pick<UploadHost, 'app' | 'lock'>): void {
+function markerMessage(state: 'absent' | 'foreign' | 'newer' | 'invalid'): string {
+	if (state === 'absent') return t('restore.stop.absent');
+	if (state === 'foreign') return t('archive.stop.foreign-folder', { folder: ARCHIVE_FOLDER });
+	return t(state === 'newer' ? 'archive.stop.marker-newer' : 'archive.stop.marker-invalid');
+}
+
+/** Design 8-8: archived files to choose from; the chosen ones go back where they were. Only a marked folder is listed. */
+export async function openRestore(host: Pick<UploadHost, 'app' | 'lock'>): Promise<void> {
 	const vault = archiveVault(host.app);
 	if (!vault) {
 		new Notice(t('archive.noAdapter'));
+		return;
+	}
+	const state = await archiveMarker(vault);
+	if (state !== 'valid') {
+		new Notice(markerMessage(state));
 		return;
 	}
 	const files = archivedFiles(vault);
@@ -209,10 +220,7 @@ export function openRestore(host: Pick<UploadHost, 'app' | 'lock'>): void {
 	async function restore(paths: string[]): Promise<void> {
 		const r = await restoreFiles(host.lock, vault!, paths);
 		if ('stop' in r) {
-			if (r.stop === 'busy') new Notice(t('archive.stop.busy'));
-			else if (r.state === 'absent') new Notice(t('restore.stop.absent'));
-			else if (r.state === 'foreign') new Notice(t('archive.stop.foreign-folder', { folder: ARCHIVE_FOLDER }));
-			else new Notice(t(r.state === 'newer' ? 'archive.stop.marker-newer' : 'archive.stop.marker-invalid'));
+			new Notice(r.stop === 'busy' ? t('archive.stop.busy') : markerMessage(r.state));
 			return;
 		}
 		const lines = [t('restore.result', { n: String(r.restored.length) }), ...r.skipped.map((s) => t(`restore.skipped.${s.reason}`, { path: s.path }))];

@@ -117,11 +117,28 @@ export async function contentsUnchanged(vault: ArchiveVault, snapshot: ScanSnaps
 	for (const key of new Set([...paths, ...editors.keys()])) {
 		const before = snapshot.files.get(key);
 		const text = editors.get(key);
-		if (text !== undefined && sha256Hex(text) !== (snapshot.editors.get(key) ?? before?.sha256)) return false;
 		if (!before) return false;
+		if (text !== undefined) {
+			const searched = snapshot.editors.get(key);
+			// A view opened after the scan shows its file: compared as text, since line endings and a BOM may differ.
+			if (searched !== undefined ? sha256Hex(text) !== searched : !(await viewShowsFile(vault.fs, before, text))) return false;
+		}
 		if (!(await sameContent(vault.fs, before))) return false;
 	}
 	return true;
+}
+
+const toLf = (s: string) => s.replace(/\r\n/g, '\n');
+
+/** The view's text is the file's text, line endings and a leading BOM aside. */
+async function viewShowsFile(fs: ArchiveFs, file: ScannedFile, text: string): Promise<boolean> {
+	if (file.kind !== 'text') return false;
+	try {
+		const disk = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(await fs.read(file.path));
+		return toLf(disk) === toLf(text);
+	} catch {
+		return false;
+	}
 }
 
 /** A searched text has the same bytes; a file seen as binary is still binary; a binary kind is not compared. */
@@ -169,12 +186,22 @@ export async function scopeUnchanged(vault: ArchiveVault, snapshot: ScanSnapshot
 	return true;
 }
 
-/** Design 8-4 step 3: another file in scope, or listed by the vault, has the same name. */
-function hasNamesake(path: string, snapshot: ScanSnapshot, vaultFiles: readonly { path: string }[]): boolean {
-	const name = nameKey(path);
-	const self = pathKey(path);
-	for (const f of snapshot.files.values()) if (pathKey(f.path) !== self && nameKey(f.path) === name) return true;
-	return vaultFiles.some((f) => pathKey(f.path) !== self && nameKey(f.path) === name);
+/** Design 8-4 step 3: every path by name (`nameKey` → `pathKey`s), built once for all candidates. */
+function nameIndex(paths: Iterable<string>): Map<string, Set<string>> {
+	const index = new Map<string, Set<string>>();
+	for (const p of paths) {
+		const name = nameKey(p);
+		let set = index.get(name);
+		if (!set) index.set(name, (set = new Set()));
+		set.add(pathKey(p));
+	}
+	return index;
+}
+
+/** Another file in the index has the same name. */
+function hasNamesake(path: string, index: Map<string, Set<string>>): boolean {
+	const same = index.get(nameKey(path));
+	return same !== undefined && [...same].some((p) => p !== pathKey(path));
 }
 
 /** The archive command (8-2). */
@@ -221,6 +248,9 @@ async function run(deps: ArchiveDeps, watch: ChangeWatch): Promise<ArchiveStop |
 		throw error;
 	}
 	const unchanged = async () => watch.epoch === epoch && (await contentsUnchanged(vault, snapshot, watch.changed));
+	// The walk must have found every file the vault lists: otherwise texts may have gone unsearched (I19).
+	const missing = vault.files().find((f) => !snapshot.files.has(pathKey(f.path)));
+	if (missing) return { stop: 'incomplete', reason: 'not-listed', path: missing.path };
 	const indexed = vault.indexed();
 	for (const p of indexed.resolved) referenced.add(pathKey(p));
 	const unresolved = normalizeForSearch([...indexed.unresolved].join('\n'));
@@ -230,7 +260,7 @@ async function run(deps: ArchiveDeps, watch: ChangeWatch): Promise<ArchiveStop |
 	const excluded: ArchivePlan['excluded'] = {};
 	const exclude = (reason: ExcludedReason | 'referenced') => (excluded[reason] = (excluded[reason] ?? 0) + 1);
 	const candidates: ArchiveCandidate[] = [];
-	const vaultFiles = vault.files();
+	const namesakes = nameIndex([...[...snapshot.files.values()].map((f) => f.path), ...vault.files().map((f) => f.path)]);
 	try {
 		for (const file of pool) {
 			deps.signal.throwIfAborted();
@@ -238,7 +268,7 @@ async function run(deps: ArchiveDeps, watch: ChangeWatch): Promise<ArchiveStop |
 				exclude('referenced');
 				continue;
 			}
-			if (hasNamesake(file.path, snapshot, vaultFiles)) {
+			if (hasNamesake(file.path, namesakes)) {
 				exclude('same-name');
 				continue;
 			}
@@ -336,7 +366,9 @@ async function moveOne(deps: ArchiveDeps, watch: ChangeWatch, c: ArchiveCandidat
 	if (deps.settings.readOnly !== undefined) return 'read-only';
 	if (!(await unchanged()) || !(await scopeUnchanged(vault, snapshot, false))) return 'changed';
 	if ((await vault.hash(c.path)) !== c.sourceSha256) return 'source-changed';
-	if (hasNamesake(c.path, snapshot, vault.files())) return 'same-name';
+	// What the vault lists now, and what it does not report (unchanged since the scan, as just checked).
+	const unwatched = [...snapshot.files.values()].filter((f) => f.unwatched).map((f) => f.path);
+	if (hasNamesake(c.path, nameIndex([...vault.files().map((f) => f.path), ...unwatched]))) return 'same-name';
 	if (await vault.exists(to)) return 'occupied';
 	try {
 		// 8-1: the folder and its marker, made with the first move. An existing marker is never replaced.

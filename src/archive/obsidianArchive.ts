@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { type App, type EventRef, FileSystemAdapter, TextFileView, TFile } from 'obsidian';
+import { type App, type EventRef, FileSystemAdapter, MarkdownView, TextFileView, TFile } from 'obsidian';
 import { jobClients } from '../upload/clients';
 import type { UploadHost } from '../upload/obsidianJob';
 import type { ArchiveDeps, ArchivePlan, ArchiveVault } from './archive';
@@ -13,21 +13,29 @@ import { ChangeWatch } from './watch';
 
 const toLf = (s: string) => s.replace(/\r\n/g, '\n');
 
-/** Every loaded text view (Markdown, Canvas) with a file, in every window. */
+/**
+ * Every loaded Markdown or Canvas view with a file, in every window. Other plugins' views are left alone: their
+ * data may be serialized differently from their file, and saving them would rewrite notes.
+ */
 function textViews(app: App): TextFileView[] {
 	const views: TextFileView[] = [];
 	app.workspace.iterateAllLeaves((leaf) => {
-		if (leaf.view instanceof TextFileView && leaf.view.file) views.push(leaf.view);
+		const view = leaf.view;
+		if (view instanceof TextFileView && view.file && (view instanceof MarkdownView || view.getViewType() === 'canvas')) views.push(view);
 	});
 	return views;
 }
 
-/** Design 8-2 step 3: every open view saved; false if one still differs from its file afterwards. */
+/**
+ * Design 8-2 step 3 (as D1 for one note): a view holding text that is not on disk yet is saved; the others are
+ * not touched. False if a view and its file still differ afterwards.
+ */
 async function saveAllViews(app: App): Promise<boolean> {
 	for (const view of textViews(app)) {
 		const file = view.file;
 		if (!file) continue;
 		try {
+			if (toLf(view.getViewData()) === toLf(await app.vault.read(file))) continue;
 			await view.save();
 			if (toLf(view.getViewData()) !== toLf(await app.vault.read(file))) return false;
 		} catch {

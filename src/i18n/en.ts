@@ -406,6 +406,7 @@ export const en = {
 	'archive.stop.marker-invalid': 'The marker of the archive folder is missing or broken, so the folder is not used.',
 	'archive.stop.incomplete-too-large': 'References could not be checked: {path} is too large to search (over 20 MB). Nothing was archived.',
 	'archive.stop.incomplete-unreadable': 'References could not be checked: {path} could not be read. Nothing was archived.',
+	'archive.stop.incomplete-not-listed': 'References could not be checked: {path} was not found when reading the vault folder. Nothing was archived.',
 	'archive.stop.incomplete-canvas': 'References could not be checked: the Canvas {path} could not be read. Nothing was archived.',
 	'archive.stop.auth': 'The storage could not be reached: {reason} Nothing was archived.',
 	'archive.stop.nothing': 'No file can be archived.',

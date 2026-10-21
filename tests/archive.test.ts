@@ -187,6 +187,13 @@ describe('archiveCommand (8-2 to 8-7)', () => {
 		expect(await archiveCommand(w.deps)).toEqual({ stop: 'auth', category: 'sso-login-required' });
 	});
 
+	it('stops if walking the folder missed a file the vault lists: texts may have gone unsearched', async () => {
+		const w = await threeUploaded();
+		const files = w.vault.files;
+		w.vault.files = () => [...files(), { path: 'unseen/n.md', size: 3 }];
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'incomplete', reason: 'not-listed', path: 'unseen/n.md' });
+	});
+
 	it('an unsaved editor naming a file keeps it', async () => {
 		const w = await threeUploaded();
 		w.editors.push({ path: 'n.md', text: 'typed ![[b.pdf]]' });
@@ -256,6 +263,16 @@ describe('nothing moves once the vault changed (8-6, I20)', () => {
 		const w = await threeUploaded();
 		w.onConfirm = (plan) => {
 			w.editors.push({ path: 'n.md', text: 'no links' });
+			return plan.candidates.map((c) => c.path);
+		};
+		expect(await archiveCommand(w.deps)).toMatchObject({ done: { moved: ['att/x/a.pdf', 'att/y/b.pdf', 'att/y/z/c.pdf'] } });
+	});
+
+	it('a view opened after the scan on a CRLF file with a BOM does not stop it', async () => {
+		const w = await threeUploaded();
+		w.data.set('crlf.md', new Uint8Array([0xef, 0xbb, 0xbf, ...bytes('line\r\nnext')]));
+		w.onConfirm = (plan) => {
+			w.editors.push({ path: 'crlf.md', text: 'line\nnext' });
 			return plan.candidates.map((c) => c.path);
 		};
 		expect(await archiveCommand(w.deps)).toMatchObject({ done: { moved: ['att/x/a.pdf', 'att/y/b.pdf', 'att/y/z/c.pdf'] } });
