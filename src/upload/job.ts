@@ -2,6 +2,7 @@
 // but writes nothing (the preview command stops there, I13); sending goes group by group through the uploader;
 // the note changes only over the exact snapshot, otherwise the Markdown is copied (I7). Obsidian stays outside:
 // everything it provides is passed in.
+import { ARCHIVE_FOLDER } from '../archive/paths';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { stableStringify } from '../settings/migrate';
 import { connectionState, connectionTarget } from '../settings/registry';
@@ -225,8 +226,6 @@ interface Prepared {
 	occurrences: { embed: FoundEmbed; source: ReferenceSource }[];
 }
 
-/** Design 8-1: the archive folder, at the root of the vault. */
-export const ARCHIVE_FOLDER = '_s3-archive';
 
 const isNoteFile = (path: string) => ['md', 'canvas'].includes(extensionOf(path));
 
