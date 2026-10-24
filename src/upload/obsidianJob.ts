@@ -192,6 +192,7 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 		prepare: {
 			resolveLink: (linkpath) => resolveLink(app, file.path, linkpath),
 			encoder: canvasEncoder,
+			attachments: true,
 			now: () => new Date(),
 			newId: () => crypto.randomUUID(),
 		},

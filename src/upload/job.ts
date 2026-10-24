@@ -168,8 +168,8 @@ export interface PrepareDeps {
 	resolveLink(linkpath: string): SourceFile | undefined;
 	encoder: Encoder;
 	/**
-	 * Phase 4: links (5-4) and files other than PNG, JPEG, WebP and GIF (3-1 step 3). Off until the confirmation
-	 * screen (4, 9-2) and the preview (7-1) handle them; when off, only embeds are prepared, as in Phase 3.
+	 * Phase 4: links (5-4) and files other than PNG, JPEG, WebP and GIF (3-1 step 3). The plugin turns it on; when
+	 * off, only embeds of images are prepared, as in Phase 3.
 	 */
 	attachments?: boolean;
 	now(): Date;
