@@ -22,10 +22,29 @@ Images in a private bucket are referenced with the plugin's own scheme and shown
 
 - `work` is the alias of a private storage connection. An alias always points to the same bucket: alias, bucket and endpoint cannot be changed after the connection is created.
 - Use the command **Insert reference to a private file** to create references; it encodes the object key correctly.
-- No pre-signed URL is ever written to the note. Images are downloaded on demand and kept in memory only.
-- Supported formats: PNG, JPEG, GIF, WebP. SVG is not shown yet.
+- No pre-signed URL is ever written to the note. Files are downloaded on demand and kept in memory only.
 - The AWS profile is chosen per device and is not synchronised with the vault.
 - Without the plugin, the reference stays in the note as text and Obsidian shows a broken image. Obsidian cannot load the `s3-bridge:` scheme, so nothing is sent over the network.
+
+What is shown depends on the extension of the key, decided before anything is downloaded:
+
+| Extension | Shown as |
+|---|---|
+| `png` `jpg` `jpeg` `gif` `webp` | Image |
+| `svg` | Image (scripts in it do not run) |
+| `pdf` | Pages drawn as pictures, as they scroll into view. Links, forms, attachments and scripts in the PDF do nothing |
+| `txt` `text` `log` `csv` `tsv` `json` | Plain text, read as UTF-8 (only the beginning of a long file) |
+| Anything else (Office, ZIP, audio, video, …) | A card with the name, type and size; only the object's metadata is read |
+| No extension | Chosen from the object's Content-Type |
+
+- SVG and text are shown only when their content matches the extension; otherwise a card is shown. Password-protected and damaged PDFs are also shown as a card.
+- The size limits are in the settings (**Preview**).
+- A link such as `[Report](s3-bridge://work/docs/report.pdf)` opens the same preview in a window inside Obsidian, in Reading view, Live Preview and Source mode, whether opened by a click (with or without a modifier key), the keyboard or the context menu, also in pop-out windows. It is never passed to a browser or another application. This holds only while the plugin is enabled: otherwise Obsidian handles the link as it does any unknown scheme.
+
+Limits of the preview:
+
+- The plugin and its libraries never write downloaded content to disk. Electron and the operating system may still do so on their own (for example, memory swapped out to disk).
+- PDF pages are drawn within a fixed memory budget; pages out of view are released first, and a page that does not fit is not shown. The budget is set by calculation, not measured on every machine.
 
 ## Uploading images
 
@@ -51,7 +70,7 @@ Generated links:
 
 Inside tables, `|` is escaped as `\|`.
 
-**Not uploaded** (the reason is shown): external URLs and existing `s3-bridge://` references, embeds in comments, code or front matter, links to a heading or block, links with a title, files that are not found or not a supported image, files over the size or pixel limits, and notes in an excluded folder. When the plugin cannot read a part of the note safely, it stops instead of guessing.
+**Not uploaded** (the reason is shown): external URLs and existing `s3-bridge://` references, embeds in comments, code or front matter, links to a heading or block, links with a title, files that are not found or not a supported image, files over the size or pixel limits, and notes in an excluded folder. When the plugin cannot read a part of the note safely, it stops instead of guessing: for example, a comment containing inline code with `%%` in it. It also stops when the embeds and links it found differ from Obsidian's own index of the note, even where an earlier version would have uploaded the images.
 
 The same image is uploaded once per run, and an image uploaded before (within the upload history) is reused after its checksum is confirmed on the storage.
 
@@ -97,6 +116,7 @@ Before each image is sent, the plugin writes a record to its folder (`pending-<d
 - **Resume** checks each file on the storage first and sends it again only if it is missing and the source file is unchanged. Resuming never changes the links in your notes; copy the Markdown afterwards from the same list (per note).
 - **Discard** removes a record. The object may remain on the storage, and the plugin can no longer prevent a second copy of it.
 - Records from another device are shown separately and are never resumed automatically. You can take them over on this device or discard them.
+- Records are written in a newer format than earlier versions of the plugin read. Going back to an earlier version is not supported: it shows the records as damaged. Do not reset or discard them there; install this version again, and it reads them as they were.
 
 ### Syncing the vault with Git or another tool
 
@@ -119,6 +139,9 @@ A file counts as named when its file name appears anywhere in a text file of the
 - The visible text of a link the upload wrote is counted. For files that are not images, and for links, this text is the file name with its extension, so those originals stay named and are not offered until you change the text. Image embeds use the name without its extension and are not affected.
 - Public links (`https://…`) are counted like any other text, so an original sent to public storage under its own name is not offered.
 - Not found: references in formats of other plugins, from outside the vault, and changes on other devices that are not synced yet.
+- Decodings are tried in one order (escapes, then `%`, then Unicode normalisation). A name hidden by the reverse order, such as JSON or HTML escapes inside `%`-encoding, is not found.
+- The vault is watched from the start of the search until the last file is moved, and the command stops if anything changes. A change made by another tool (such as a sync client) after a move has started cannot be prevented.
+- Archiving does not free space: the files stay in the vault, and sync tools keep copying them. Delete the archive folder, or exclude it from sync, once you no longer need the originals.
 
 ## Publishing public files
 
