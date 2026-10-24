@@ -114,7 +114,7 @@ A public URL reveals the key, so the settings warn when a public template uses `
 - **Maximum image size for uploads** applies to each image; images beyond **Maximum total per run** are left for the next run.
 - Content-Type is set from the bytes that are sent. The plugin sets no ACL and no Cache-Control.
 
-Files that are not images are sent as they are, never converted, with a fixed Content-Type chosen from their content (`text/plain; charset=utf-8` for text). **Maximum size of other files for uploads** applies to each of them; a file is read whole into memory for a single request. A large upload is not cut off by the request timeout while data is flowing; stop it from the progress notice.
+Files that are not images are sent as they are, never converted, with a fixed Content-Type chosen from their content (`text/plain; charset=utf-8` for text). **Maximum size of other files for uploads** applies to each of them; a file is read whole into memory for a single request. An upload has no limit on its total time: it stops only when no data moves for the request timeout set in **Network**, or when you stop it from the progress notice.
 
 What may go to public storage:
 

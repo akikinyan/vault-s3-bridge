@@ -439,5 +439,6 @@ export const ja: Record<MessageKey, string> = {
 	'restore.stop.absent': '退避フォルダはありません。',
 	'settings.archive': '退避したファイル',
 	'settings.archiveOpen': '退避したファイルを元の場所へ戻す',
+	'settings.archiveList': '一覧を開く',
 	'settings.archiveCount': '退避フォルダに {n} 件あります。',
 };

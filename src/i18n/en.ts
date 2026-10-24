@@ -437,6 +437,7 @@ export const en = {
 	'restore.stop.absent': 'There is no archive folder.',
 	'settings.archive': 'Archived files',
 	'settings.archiveOpen': 'Move archived files back',
+	'settings.archiveList': 'Open the list',
 	'settings.archiveCount': '{n} file(s) in the archive folder.',
 } as const;
 

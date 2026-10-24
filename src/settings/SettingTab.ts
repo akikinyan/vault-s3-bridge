@@ -33,7 +33,6 @@ function describeTarget(target: string): string {
 export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	/** Record files of other devices, read when the tab is shown (7-5). */
 	private others: OtherDeviceFile[] = [];
-	private archiveDesc = '';
 
 	constructor(
 		app: App,
@@ -243,27 +242,33 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	}
 
 	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
-	/** Design 9-3: the archive folder's state, read asynchronously like the other devices' files. */
+	/**
+	 * Design 9-3: the archive folder's state. Read asynchronously into the row itself on every render: update() does
+	 * not redraw the description of a row already shown.
+	 */
 	private archiveDefinition(): SettingDefinitionItem<ControlKey> {
-		void this.refreshArchive(false);
 		return {
 			type: 'group',
 			heading: t('settings.archive'),
 			items: [
 				{
 					name: t('settings.archiveOpen'),
-					desc: this.archiveDesc,
-					action: () => void openRestore(this.plugin.uploadHost, () => void this.refreshArchive(false)),
+					render: (setting) => {
+						let shown = true;
+						const refresh = () =>
+							void archiveStatus(this.app).then((desc) => {
+								if (shown) setting.setDesc(desc);
+							});
+						setting.setName(t('settings.archiveOpen'));
+						refresh();
+						setting.addButton((b) => b.setButtonText(t('settings.archiveList')).onClick(() => void openRestore(this.plugin.uploadHost, refresh)));
+						return () => {
+							shown = false;
+						};
+					},
 				},
 			],
 		};
-	}
-
-	private async refreshArchive(always = true): Promise<void> {
-		const desc = await archiveStatus(this.app);
-		const changed = desc !== this.archiveDesc;
-		this.archiveDesc = desc;
-		if (always || changed) this.update();
 	}
 
 	private async refreshPending(always = true): Promise<void> {
