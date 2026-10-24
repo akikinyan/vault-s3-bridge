@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { htmlDecode, jsonStrings, jsonUnescape, markdownUnescape, NameMatcher, nameForms, percentDecode, searchForms } from '../src/archive/decode';
+import { htmlDecode, jsonStrings, jsonUnescape, markdownUnescape, NameMatcher, nameForms, percentDecode, searchForms, withoutReferences } from '../src/archive/decode';
 import { archivedPathOf, isSafeVaultPath, parseMarker, restoredPathOf } from '../src/archive/paths';
 
 /** Whether `name` is found in `text` (as a scanned file would be searched). */
@@ -63,6 +63,36 @@ describe('a name is found in every way a text can write it (8-3, design 13)', ()
 
 	it('the name forms are N(name) and N(P(name))', () => {
 		expect(nameForms('A%20B.PDF')).toEqual(['a%20b.pdf', 'a b.pdf']);
+	});
+});
+
+describe('s3-bridge references are not references to a vault file (8-3)', () => {
+	const url = 's3-bridge://work/attachments/2026/10/%E7%A2%BA%E8%AA%8D/space%20name.png';
+
+	it('a note as the upload left it does not name the original', () => {
+		expect(found(`![space name](${url})\n![space name|120](${url})`, 'space name.png')).toBe(false);
+		expect(found(`| ![表\\|60](s3-bridge://work/a/%E8%A1%A8%20%E3%81%AE%20%E7%94%BB%E5%83%8F.png) | x |`, '表 の 画像.png')).toBe(false);
+	});
+
+	it('the same note with a local link still names it, even right after the URL', () => {
+		expect(found(`![space name](${url}) ![[space name.png]]`, 'space name.png')).toBe(true);
+		expect(found(`![x](${url})![[space name.png]]`, 'space name.png')).toBe(true);
+		expect(found(`[x](${url})[t](space%20name.png)`, 'space name.png')).toBe(true);
+	});
+
+	it('in a Canvas text node and in HTML', () => {
+		const canvas = `{"nodes":[{"type":"text","text":"![a](${url})"}]}`;
+		expect(found(canvas, 'space name.png', jsonStrings(canvas))).toBe(false);
+		expect(found(`<a href="${url}">space name</a>`, 'space name.png')).toBe(false);
+		expect(found(`<a href="${url}">space name.png</a>`, 'space name.png')).toBe(true);
+	});
+
+	it('only the characters a reference is written with are removed', () => {
+		expect(withoutReferences(`a ${url} b`)).toBe('a   b');
+		expect(withoutReferences('s3-bridge://work/a b.png')).toBe('  b.png');
+		expect(found('<s3-bridge://work/a b.png>', 'b.png')).toBe(true);
+		expect(found('S3-BRIDGE://work/space%20name.png', 'space name.png')).toBe(true);
+		expect(found('s3-bridge&#58;//work/space%20name.png', 'space name.png')).toBe(true);
 	});
 });
 

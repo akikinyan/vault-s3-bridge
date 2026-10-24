@@ -77,6 +77,18 @@ export function jsonStrings(text: string): string {
 	return out.join('\n');
 }
 
+// The characters formatReference writes. A reference written otherwise (a raw space, say) ends early and the rest
+// of it is searched; text joined to a URL with none of the other characters between is taken as part of it.
+const REFERENCE_URL = /s3-bridge:\/\/[A-Za-z0-9\-_.~/%]*/g;
+
+/**
+ * Design 8-3 step 1: `s3-bridge://` references blanked out. They name an object on the storage, never a vault file,
+ * yet their key usually ends with the uploaded file's own name. Done before P, while `%20` still keeps the URL whole.
+ */
+export function withoutReferences(text: string): string {
+	return text.includes('s3-bridge://') ? text.replace(REFERENCE_URL, ' ') : text;
+}
+
 /**
  * Design 8-3 step 4: the forms a text is searched in, each once. S is every combination of the structural
  * decodings ({as written, JSON unescaped} × {HTML decoded or not} × {Markdown unescaped or not}, plus the strings
@@ -93,7 +105,8 @@ export function* searchForms(text: string, parsed?: string): Generator<string> {
 			}
 		}
 	}
-	for (const s of structural) {
+	for (const decoded of structural) {
+		const s = withoutReferences(decoded);
 		const n = normalizeForSearch(s);
 		if (!seen.has(n)) {
 			seen.add(n);

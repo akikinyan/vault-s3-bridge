@@ -61,6 +61,18 @@ describe('scanReferences (8-3)', () => {
 		expect(r.snapshot.files.get('notes.org')).toMatchObject({ kind: 'text', sha256: sha256Hex('see a.pdf') });
 	});
 
+	it('a note whose embeds the upload replaced does not keep the originals', async () => {
+		const { fs } = memoryFs({
+			'n.md': '![a](s3-bridge://work/att/a%20a.png)\n[[b.pdf]]',
+			'board.canvas': '{"nodes":[{"type":"text","text":"![c](s3-bridge://work/att/c.png)"}]}',
+			'att/a a.png': new Uint8Array([1]),
+			'att/b.pdf': new Uint8Array([1]),
+			'att/c.png': new Uint8Array([1]),
+		});
+		const r = await scan(fs, names('att/a a.png', 'att/b.pdf', 'att/c.png'));
+		expect([...r.referenced]).toEqual(['att/b.pdf']);
+	});
+
 	it('a file never counts as naming itself', async () => {
 		const { fs } = memoryFs({ 'list.txt': 'list.txt and other.txt', 'other.txt': 'x' });
 		const r = await scan(fs, names('list.txt', 'other.txt'));

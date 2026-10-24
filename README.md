@@ -109,6 +109,17 @@ The plugin writes these files to `.obsidian/plugins/vault-s3-bridge/`:
 | `pending-*.json` | Unfinished uploads of one device | No: add `pending-*.json` to `.gitignore` |
 | `*.tmp-*` | Temporary file, normally removed right away; may remain after a crash | No: add `*.tmp-*` to `.gitignore` |
 
+### Archiving uploaded originals
+
+**Archive uploaded originals** moves source files that are already on the storage into `_s3-archive` in the vault, keeping their paths. Nothing is deleted, and **Move archived files back** returns them. A file is offered only if no text in the vault names it, the upload history has its current content, the storage still holds that content (checked by checksum), and no other file in the vault has the same name.
+
+A file counts as named when its file name appears anywhere in a text file of the vault, after decoding `%`, JSON, HTML and Markdown escapes. Matching is deliberately broad: a false match only keeps a file where it is.
+
+- `s3-bridge://` references are not counted. Their key usually ends with the same file name, but they point to the storage, not to the vault file.
+- The visible text of a link the upload wrote is counted. For files that are not images, and for links, this text is the file name with its extension, so those originals stay named and are not offered until you change the text. Image embeds use the name without its extension and are not affected.
+- Public links (`https://…`) are counted like any other text, so an original sent to public storage under its own name is not offered.
+- Not found: references in formats of other plugins, from outside the vault, and changes on other devices that are not synced yet.
+
 ## Publishing public files
 
 Keep S3 Block Public Access enabled and serve the bucket through a CDN such as Amazon CloudFront with origin access control. Set the connection's **Public base URL** to the https URL that serves the bucket (for example `https://cdn.example.com/`); public uploads are not possible without it. The link is this URL followed by the object key.
