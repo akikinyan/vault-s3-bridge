@@ -138,12 +138,42 @@ describe('textPreview (7-2)', () => {
 	});
 });
 
-describe('the preview modules never write files (7-2)', () => {
-	it('no fs, vault.create* or adapter.write* in src/preview', () => {
-		const dir = new URL('../src/preview/', import.meta.url);
-		for (const name of readdirSync(dir)) {
-			const text = readFileSync(join(dir.pathname, name), 'utf8');
+/** The preview's own code: every module in src/preview and the modal that shows a preview. */
+function previewSources(): [string, string][] {
+	const dir = new URL('../src/preview/', import.meta.url);
+	const files = readdirSync(dir).map((name) => [name, readFileSync(join(dir.pathname, name), 'utf8')] as [string, string]);
+	return [...files, ['ui/PreviewModal.ts', readFileSync(new URL('../src/ui/PreviewModal.ts', import.meta.url), 'utf8')]];
+}
+
+/** Every TypeScript file under src. */
+function allSources(dir = new URL('../src/', import.meta.url)): [string, string][] {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((e): [string, string][] => {
+		const url = new URL(e.name + (e.isDirectory() ? '/' : ''), dir);
+		if (e.isDirectory()) return allSources(url);
+		return e.name.endsWith('.ts') ? [[url.pathname, readFileSync(url, 'utf8')]] : [];
+	});
+}
+
+describe('the preview modules never write files (7-2, I16)', () => {
+	it('no fs, vault.create* or adapter.write* in the preview code, the modal included', () => {
+		for (const [name, text] of previewSources()) {
 			expect(text, name).not.toMatch(/from 'node:fs|from 'fs|require\('fs|vault\.create|adapter\.write|vault\.modify|vault\.append/);
+		}
+	});
+
+	it('nothing offers to save, download or hand the content to another program', () => {
+		for (const [name, text] of previewSources()) {
+			expect(text, name).not.toMatch(/\.download\b|showSaveFilePicker|openExternal|electron|window\.print|createEl\('(iframe|embed|object)'/);
+		}
+	});
+});
+
+describe('fetched content enters the DOM only as text, an img or a canvas (I17, CLAUDE.md)', () => {
+	it('no HTML is parsed anywhere in src', () => {
+		const sources = allSources();
+		expect(sources.length).toBeGreaterThan(50);
+		for (const [name, text] of sources) {
+			expect(text, name).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment|DOMParser|srcdoc/);
 		}
 	});
 });

@@ -4,7 +4,7 @@ import { ARCHIVE_MARKER, MARKER_CONTENT } from '../src/archive/paths';
 import { archivedFiles, restoreFiles } from '../src/archive/restore';
 import { sha256Hex } from '../src/archive/scan';
 import { ChangeWatch } from '../src/archive/watch';
-import { appendHistoryOp, saveConnectionOp } from '../src/settings/ops';
+import { appendHistoryOp, saveConnectionOp, setFieldOp } from '../src/settings/ops';
 import { connectionTarget } from '../src/settings/registry';
 import { SettingsStore } from '../src/settings/store';
 import type { HistoryEntry, StorageConnection } from '../src/settings/types';
@@ -335,6 +335,71 @@ describe('nothing moves once the vault changed (8-6, I20)', () => {
 		};
 		expect(await archiveCommand(w.deps)).toMatchObject({ done: { moved: ['att/x/a.pdf'], stopped: { path: 'att/y/b.pdf' } } });
 		expect(w.data.has('att/y/b.pdf')).toBe(true);
+	});
+});
+
+describe('more ways a file stays named or the judgement goes stale (Step 4, I19, I20)', () => {
+	it.each([
+		['another file deleted', (w: World) => w.watch.deleted('other/a.pdf')],
+		['another file renamed', (w: World) => w.watch.renamed('other/renamed.pdf', 'other/a.pdf')],
+		['a folder moved', (w: World) => w.watch.renamed('moved', 'att/q')],
+	])('%s while the screen is open stops it: a link may now resolve to a candidate', async (_label, change) => {
+		const w = await threeUploaded();
+		w.onConfirm = (plan) => {
+			change(w);
+			return plan.candidates.map((c) => c.path);
+		};
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'changed' });
+		expect([...w.data.keys()].some((p) => p.startsWith('_s3-archive/att'))).toBe(false);
+	});
+
+	it.each([
+		['the vault is changed while Head is waiting', (w: World) => void w.data.set('n.md', bytes('now ![[c.pdf]]'))],
+		['a note naming a candidate is added while Head is waiting', (w: World) => void w.data.set('.hidden/late.md', bytes('[[a.pdf]]'))],
+	])('%s: nothing moves', async (_label, change) => {
+		const w = await threeUploaded();
+		w.s3.on('head', (key) => {
+			change(w);
+			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT', ContentType: 'application/pdf' };
+		});
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'changed' });
+		expect([...w.data.keys()].some((p) => p.startsWith('_s3-archive/att'))).toBe(false);
+	});
+
+	it('notes in excluded folders and in the archive folder still name files', async () => {
+		const w = await threeUploaded();
+		expect((await w.settings.mutate(setFieldOp('excludeFolders', 'private'))).ok).toBe(true);
+		w.data.set('private/n.md', bytes('![[a.pdf]]'));
+		w.data.set(ARCHIVE_MARKER, bytes(MARKER_CONTENT));
+		w.data.set('_s3-archive/old/n.md', bytes('[[b.pdf]]'));
+		w.onConfirm = (plan) => {
+			expect(plan.candidates.map((c) => c.path)).toEqual(['att/y/z/c.pdf']);
+			expect(plan.excluded).toEqual({ referenced: 2 });
+			return undefined;
+		};
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'cancelled' });
+		expect(w.plans).toHaveLength(1);
+	});
+
+	it("Obsidian's index counts too: a resolved link, and an unresolved one naming the file", async () => {
+		const w = await threeUploaded();
+		w.vault.indexed = () => ({ resolved: ['att/x/a.pdf'], unresolved: ['some/B.PDF'] });
+		w.onConfirm = (plan) => {
+			expect(plan.candidates.map((c) => c.path)).toEqual(['att/y/z/c.pdf']);
+			expect(plan.excluded).toEqual({ referenced: 2 });
+			return undefined;
+		};
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'cancelled' });
+	});
+
+	it('a file in an excluded folder or in the archive folder is never offered', async () => {
+		const w = await threeUploaded();
+		expect((await w.settings.mutate(setFieldOp('excludeFolders', 'att/y'))).ok).toBe(true);
+		w.onConfirm = (plan) => {
+			expect(plan.candidates.map((c) => c.path)).toEqual(['att/x/a.pdf']);
+			return undefined;
+		};
+		expect(await archiveCommand(w.deps)).toEqual({ stop: 'cancelled' });
 	});
 });
 

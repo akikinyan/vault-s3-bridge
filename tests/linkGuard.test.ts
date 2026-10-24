@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
-import { beforeAll, describe, expect, it } from 'vitest';
+import { Text } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { type CommandRegistry, guardLinkCommands, guardWindowOpen, isLinkOpeningCommand, isS3Reference, LinkGuard, s3LinkAt } from '../src/preview/linkGuard';
 import { installObsidianDomHelpers } from './fixtures/obsidianDom';
 
@@ -156,5 +158,68 @@ describe('LinkGuard layer 1 (reading view links)', () => {
 		const after = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
 		t.a.dispatchEvent(after);
 		expect(after.defaultPrevented).toBe(false);
+	});
+});
+
+describe('LinkGuard layer 1 (editor text and internal links, Step 4)', () => {
+	const line = 'see [資料](s3-bridge://work/k/a.pdf) and more';
+	/** An editor whose text is `line`; the pointer lands on the character `at`. */
+	const editor = (at: number) => {
+		const content = document.createElement('div');
+		content.className = 'cm-content';
+		const span = content.appendChild(document.createElement('span'));
+		span.textContent = line;
+		document.body.append(content);
+		const view = { posAtCoords: () => at, state: { doc: Text.of([line]) } };
+		const spy = vi.spyOn(EditorView, 'findFromDOM').mockReturnValue(view as unknown as EditorView);
+		return { span, done: () => (spy.mockRestore(), content.remove()) };
+	};
+	const guarded = () => {
+		const opened: string[] = [];
+		const guard = new LinkGuard({ openPreview: (u) => opened.push(u) });
+		guard.install(window);
+		return { opened, guard };
+	};
+
+	it('a hand-typed link in the editor: a click opens the preview, a middle or right click does nothing', () => {
+		const { opened, guard } = guarded();
+		const e = editor(line.indexOf('a.pdf'));
+		const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+		e.span.dispatchEvent(click);
+		expect(click.defaultPrevented).toBe(true);
+		expect(opened).toEqual(['s3-bridge://work/k/a.pdf']);
+		for (const [type, button] of [['auxclick', 1], ['mousedown', 1], ['contextmenu', 2]] as const) {
+			const ev = new MouseEvent(type, { bubbles: true, cancelable: true, button });
+			e.span.dispatchEvent(ev);
+			expect(ev.defaultPrevented, type).toBe(true);
+		}
+		expect(opened).toHaveLength(1);
+		e.done();
+		guard.dispose();
+	});
+
+	it('elsewhere on the same line a click is left to the editor (the cursor moves)', () => {
+		const { opened, guard } = guarded();
+		const e = editor(line.indexOf('more'));
+		const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+		e.span.dispatchEvent(click);
+		expect(click.defaultPrevented).toBe(false);
+		expect(opened).toEqual([]);
+		e.done();
+		guard.dispose();
+	});
+
+	it('a link that carries its target in data-href is stopped too', () => {
+		const { opened, guard } = guarded();
+		const a = document.createElement('a');
+		a.setAttribute('data-href', 's3-bridge://work/k/a.pdf');
+		a.textContent = '資料';
+		document.body.append(a);
+		const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true });
+		a.dispatchEvent(click);
+		expect(click.defaultPrevented).toBe(true);
+		expect(opened).toEqual(['s3-bridge://work/k/a.pdf']);
+		a.remove();
+		guard.dispose();
 	});
 });
