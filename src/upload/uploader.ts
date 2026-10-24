@@ -10,7 +10,7 @@ import type { DeepReadonly } from '../util/deepReadonly';
 import { publicUseOf } from './fileType';
 import { alternateKey } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
-import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand } from './s3';
+import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand, type PutTimers, type PutWatch, putWatch } from './s3';
 import { afterHead, afterPut, type HeadStage, type Mode, type Next, type PutResult, resumePlan } from './transitions';
 
 export type ItemOutcome =
@@ -43,7 +43,7 @@ export interface UploaderDeps {
 	client: Pick<S3Client, 'send'>;
 	/** Job abort, authentication change, plugin unload. A request stopped by it is ours (6-2 row 1). */
 	signal: AbortSignal;
-	/** network.timeoutMs for a Head; a Put is limited by inactivity only (PUT_REQUEST_TIMEOUT_MS). */
+	/** network.timeoutMs: a Head's limit, and how long a Put's body may stop moving (putWatch). */
 	timeoutMs: number;
 	/**
 	 * Job-level conditions checked synchronously inside every checkpoint (10-3 items 1 to 3 beyond what the
@@ -66,6 +66,8 @@ export interface UploaderDeps {
 	 */
 	isConfirmed?(item: DeepReadonly<PendingItem>): boolean;
 	sleep(ms: number, signal: AbortSignal): Promise<void>;
+	/** For the watch on a Put's body (putWatch); without them a stalled Put ends only by the job's abort. */
+	timers?: PutTimers;
 	random(): number;
 	now(): Date;
 	newId(): string;
@@ -268,11 +270,20 @@ class Group {
 		const key = this.key();
 		const ids = [...this.live];
 		if (!(await this.deps.pending.markPutting(ids)).ok) return { stopped: 'record-failed', settled: false };
+		const watch = putWatch(this.deps.timeoutMs, this.deps.timers);
+		try {
+			return await this.sendPut(key, body, f, ids, watch);
+		} finally {
+			watch.dispose();
+		}
+	}
+
+	private async sendPut(key: string, body: Uint8Array, f: DeepReadonly<PendingItem>, ids: string[], watch: PutWatch): Promise<{ stopped: string; settled: boolean } | { result: PutResult } | { changed: true }> {
 		const started = await this.start(
 			'put',
 			() =>
-				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.contentType), {
-					abortSignal: this.deps.signal,
+				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.contentType, watch), {
+					abortSignal: AbortSignal.any([this.deps.signal, watch.signal]),
 					requestTimeout: PUT_REQUEST_TIMEOUT_MS,
 				}),
 			() => (this.items().some((i) => this.deps.sourceChanged(i)) ? SOURCE_CHANGED : undefined),

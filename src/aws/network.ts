@@ -52,8 +52,6 @@ export interface RequestHandlerOptions {
 	connectionTimeoutMs: number;
 	/** Until the response starts, sending the body included. */
 	requestTimeoutMs: number;
-	/** Without any data sent or received; still applies when a request turns requestTimeout off. */
-	socketTimeoutMs?: number;
 }
 
 /** One handler is shared by the SSO, SSO-OIDC, STS and S3 clients of a single run. */
@@ -65,7 +63,6 @@ export function createRequestHandler(options: RequestHandlerOptions): NodeHttpHa
 		httpsAgent,
 		connectionTimeout: options.connectionTimeoutMs,
 		requestTimeout: options.requestTimeoutMs,
-		socketTimeout: options.socketTimeoutMs,
 		// Without this, @smithy/node-http-handler only logs a warning when requestTimeout passes and keeps waiting.
 		throwOnRequestTimeout: true,
 	});

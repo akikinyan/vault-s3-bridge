@@ -153,6 +153,7 @@ try {
 		sourceChanged: () => false,
 		rebuild: () => Promise.resolve(bytes),
 		sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+		timers: { set: (run, ms) => setTimeout(run, ms), clear: (t) => clearTimeout(t as NodeJS.Timeout) },
 		random: Math.random,
 		now: () => new Date(),
 		newId: () => `smoke-${++ids}`,

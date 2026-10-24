@@ -22,8 +22,6 @@ export function jobClients(store: Pick<SettingsStore, 'current' | 'device'>, con
 		noProxy: network.noProxy,
 		connectionTimeoutMs: CONNECT_TIMEOUT_MS,
 		requestTimeoutMs: network.timeoutMs,
-		// A Put has no total limit (PUT_REQUEST_TIMEOUT_MS): a stalled one ends after this long without data.
-		socketTimeoutMs: network.timeoutMs,
 	});
 	const credentials = new SharedCredentials(
 		{

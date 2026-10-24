@@ -1202,3 +1202,16 @@ describe('Step 4: public formats and the classification rules with files other t
 		expect(puts(s).length).toBeGreaterThan(0);
 	});
 });
+
+describe('a Put whose body stops moving (Step 4, putWatch)', () => {
+	it('is ended after the network timeout without progress, as an unknown result that the group then recovers', async () => {
+		const s = await setup();
+		const deps: UploaderDeps = { ...s.deps, timeoutMs: 50, timers: { set: (run, ms) => setTimeout(run, ms), clear: (t) => clearTimeout(t as NodeJS.Timeout) } };
+		// The fake takes no piece of the body and waits for the abort the watch raises.
+		s.s3.on('put', (_key, signal) => new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))));
+		const [r] = await sendGroup([item('a')], BODY, deps);
+		// Unknown, not a stop by the user: the recovery Heads the key, finds nothing and sends again.
+		expect(r).toEqual({ id: 'a', outcome: 'delivered', key: 'k/a.png' });
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png', 'head:k/a.png', 'put:k/a.png']);
+	});
+});

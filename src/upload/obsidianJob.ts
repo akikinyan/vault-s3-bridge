@@ -218,6 +218,7 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 					note,
 					copy: copyToClipboard,
 					sleep: abortableSleep,
+					timers: windowTimers,
 					random: () => Math.random(),
 					now: () => new Date(),
 					newId: () => crypto.randomUUID(),
@@ -229,6 +230,11 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 	};
 	return { deps, dispose: () => watch.dispose() };
 }
+
+const windowTimers = {
+	set: (run: () => void, ms: number) => window.setTimeout(run, ms),
+	clear: (timer: unknown) => window.clearTimeout(timer as number),
+};
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
@@ -296,6 +302,7 @@ export function resumeCommandDeps(host: UploadHost, pending: PendingStore, ui: R
 					sourceSize: (path) => app.vault.getFileByPath(path)?.stat.size,
 					encoder: canvasEncoder,
 					sleep: abortableSleep,
+					timers: windowTimers,
 					random: () => Math.random(),
 					now: () => new Date(),
 					newId: () => crypto.randomUUID(),

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { createRequestHandler } from '../src/aws/network';
 import { describe, expect, it } from 'vitest';
-import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand, uploadClient } from '../src/upload/s3';
+import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand, putWatch, uploadClient } from '../src/upload/s3';
 
 interface Captured {
 	method: string;
@@ -170,4 +171,85 @@ describe('compareHead: delivery form (I14 (e), design 3-4)', () => {
 		expect(compareHead({ ChecksumSHA256: checksumOf('0'.repeat(64)), ContentType: 'text/html' }, SENT, expect_)).toBe('mismatch');
 		expect(compareHead({ ChecksumSHA256: sum, ContentType: 'text/html', ContentDisposition: 'attachment' }, SENT)).toBe('match');
 	});
+});
+
+describe('a Put whose body takes long to send (Step 4: a 100 MB Put was cut)', () => {
+	/** An S3-like endpoint that reads the body at about 1 MB/s (or not at all), then answers 200. */
+	const endpoint = async (stall = false) => {
+		const { createServer } = await import('node:http');
+		const { Writable } = await import('node:stream');
+		const seen: { headers: Record<string, unknown>; bytes: number; sha256: string }[] = [];
+		const server = createServer((req, res) => {
+			if (stall) return;
+			const hash = createHash('sha256');
+			let bytes = 0;
+			req.pipe(
+				new Writable({
+					highWaterMark: 16 * 1024,
+					write(chunk: Buffer, _e, cb) {
+						hash.update(chunk);
+						bytes += chunk.length;
+						setTimeout(cb, chunk.length / 1000);
+					},
+				}),
+			).on('finish', () => {
+				seen.push({ headers: req.headers, bytes, sha256: hash.digest('hex') });
+				res.writeHead(200, { etag: '"e"' }).end();
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+		const port = (server.address() as { port: number }).port;
+		const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 500 });
+		const client = uploadClient({
+			region: 'ap-northeast-1',
+			endpoint: `http://127.0.0.1:${port}`,
+			forcePathStyle: true,
+			credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'example-secret', sessionToken: 'example-token' },
+			requestHandler: handler,
+		});
+		const close = () => {
+			handler.destroy();
+			server.closeAllConnections();
+			server.close();
+		};
+		return { client, seen, close };
+	};
+	const body = new Uint8Array(3 * 1024 * 1024).map((_, i) => i % 251);
+	const sent = createHash('sha256').update(body).digest('hex');
+	const send = (client: ReturnType<typeof uploadClient>, idleMs: number) => {
+		const watch = putWatch(idleMs, { set: (run, ms) => setTimeout(run, ms), clear: (t) => clearTimeout(t as NodeJS.Timeout) });
+		return client
+			.send(putCommand('bucket', 'k/big.bin', body, sent, 'application/octet-stream', watch), { abortSignal: watch.signal, requestTimeout: PUT_REQUEST_TIMEOUT_MS })
+			.finally(() => watch.dispose());
+	};
+
+	it('is sent whole while it keeps moving, though it takes longer than the idle limit and the request timeout', async () => {
+		const e = await endpoint();
+		try {
+			const t = Date.now();
+			await send(e.client, 1000);
+			expect(Date.now() - t).toBeGreaterThan(2000);
+			expect(e.seen).toHaveLength(1);
+			expect(e.seen[0]).toMatchObject({ bytes: body.byteLength, sha256: sent });
+			expect(e.seen[0]!.headers).toMatchObject({ 'content-length': String(body.byteLength), 'x-amz-checksum-sha256': checksumOf(sent), 'if-none-match': '*' });
+			expect(e.seen[0]!.headers['content-encoding']).toBeUndefined();
+		} finally {
+			e.close();
+		}
+	}, 20_000);
+
+	it('is ended when its body stops moving, with an unknown result', async () => {
+		const e = await endpoint(true);
+		try {
+			const t = Date.now();
+			const error = await send(e.client, 500).then(
+				() => undefined,
+				(err: unknown) => err,
+			);
+			expect(Date.now() - t).toBeLessThan(5000);
+			expect(classifyS3Outcome('put', error, false).outcome).toBe('indeterminate');
+		} finally {
+			e.close();
+		}
+	}, 20_000);
 });

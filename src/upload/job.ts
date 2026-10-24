@@ -588,6 +588,7 @@ export interface RunDeps {
 	note: NoteAccess;
 	copy(text: string): Promise<boolean>;
 	sleep: UploaderDeps['sleep'];
+	timers?: UploaderDeps['timers'];
 	random(): number;
 	now(): Date;
 	newId(): string;
@@ -786,6 +787,7 @@ async function sendAll(plan: JobPlan, confirmed: Confirmed, deps: RunDeps, signa
 				return bytes;
 			},
 			sleep: deps.sleep,
+			timers: deps.timers,
 			random: () => deps.random(),
 			now: () => deps.now(),
 			newId: () => deps.newId(),
@@ -1066,7 +1068,7 @@ export function resumeTargets(items: DeepReadonly<PendingItem[]>, settings: Deep
 }
 
 export interface ResumeDeps
-	extends Pick<RunDeps, 'settings' | 'pending' | 'client' | 'timeoutMs' | 'signal' | 'authGeneration' | 'sourceChanged' | 'readSource' | 'hashSource' | 'sourceSize' | 'sleep' | 'random' | 'now' | 'newId'> {
+	extends Pick<RunDeps, 'settings' | 'pending' | 'client' | 'timeoutMs' | 'signal' | 'authGeneration' | 'sourceChanged' | 'readSource' | 'hashSource' | 'sourceSize' | 'sleep' | 'timers' | 'random' | 'now' | 'newId'> {
 	encoder: Encoder;
 }
 
@@ -1130,6 +1132,7 @@ export async function resumeJob(target: ResumeTarget, confirmed: Pick<Confirmed,
 					return out;
 				},
 				sleep: deps.sleep,
+				timers: deps.timers,
 				random: () => deps.random(),
 				now: () => deps.now(),
 				newId: () => deps.newId(),
