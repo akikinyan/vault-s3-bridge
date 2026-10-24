@@ -878,11 +878,12 @@ describe('uploadCommand (10-1)', () => {
 		expect(w.pendingIO.writes).toBe(0);
 	});
 
-	it('upload: stops unless the record file is ready', async () => {
+	it.each(['damaged', 'future'] as const)('upload: stops unless the record file is ready (%s)', async (status) => {
 		const w = await world();
-		const { deps, calls } = command(w, { pending: { status: 'damaged' } });
+		const { deps, calls } = command(w, { pending: { status } });
 		expect(await uploadCommand(deps, false)).toEqual({ stop: 'pending-not-ready' });
 		expect(calls).toEqual([]);
+		expect(w.s3.calls).toEqual([]);
 	});
 
 	it('one job at a time; the lock is released afterwards, also after an error', async () => {
@@ -1558,6 +1559,18 @@ describe('links and their Markdown in the job (design 5-4, 6-2, 6-4)', () => {
 			expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed', 'embed', 'link']);
 			expect(recordMarkdown(w.pending.items[0]!, conn)).toEqual([...new Set(mds(p))]);
 		}
+	});
+
+	it('resumed, then copied from the settings: a link stays a link and an embed an embed (Step 4)', async () => {
+		const w = await on();
+		const p = await stoppedJob(w, '[[doc.pdf|資料]] ![[doc.pdf]]', priv);
+		expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed']);
+		const r = await resumeCmd(w).run();
+		expect('done' in r && r.done[0]!.results.map((x) => x.outcome)).toEqual(['delivered']);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.copied).toHaveLength(1);
+		expect(w.copied[0]!.split('\n')).toEqual(mds(p));
+		expect(w.copied[0]).toMatch(/^\[資料\]\(s3-bridge:\/\/work\/[^)]+\.pdf\)\n!\[/);
 	});
 });
 

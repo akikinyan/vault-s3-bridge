@@ -510,6 +510,21 @@ describe('PendingStore — files on disk', () => {
 			expect(await store.add([newItem('c')])).toEqual({ ok: true });
 		}, 30_000);
 
+		it.each([
+			['before-write', ['a'], 1],
+			['tmp-left', ['a'], 1],
+			['after-write', ['a', 'b'], 2],
+		])('migrating a version 1 file, %s: the earlier or the migrated state, nothing of the item lost', async (point, expected, version) => {
+			const dir = await tempDir();
+			await writeFile(join(dir, OWN_FILE), fileText(OWN, [v1Item('a', { state: 'stopped', uncertain: true, putSent: true })]));
+			run(dir, `v1-${point}`);
+			const store = await reload(dir);
+			expect(ids(store)).toEqual(expected);
+			expect(store.items[0]).toMatchObject({ id: 'a', state: 'stopped', uncertain: true, putSent: true, contentType: 'image/png' });
+			expect(JSON.parse(await readFile(join(dir, OWN_FILE), 'utf8'))).toMatchObject({ version });
+			expect(await store.others()).toEqual([]);
+		}, 30_000);
+
 		it('takeover killed before the other file is cleaned up: no item is lost or duplicated', async () => {
 			const dir = await tempDir();
 			await writeFile(join(dir, OTHER_FILE), fileText(OTHER, [storedItem('x'), storedItem('y', { state: 'putting' })]));
