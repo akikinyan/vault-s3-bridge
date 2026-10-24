@@ -53,7 +53,10 @@ export type FieldKey =
 	| 'webpEnabled'
 	| 'webpQuality'
 	| 'stripPrivate'
+	| 'maxPdfMB'
+	| 'maxTextMB'
 	| 'uploadMaxFileMB'
+	| 'uploadMaxOtherFileMB'
 	| 'uploadMaxJobMB'
 	| 'excludeFolders'
 	| 'historyLimit';
@@ -62,8 +65,15 @@ export type FieldKey =
 export const UPLOAD_BOUNDS = {
 	webpQualityPercent: { min: 50, max: 100 },
 	uploadMaxFileMB: { min: 1, max: 100 },
+	uploadMaxOtherFileMB: { min: 1, max: 100 },
 	uploadMaxJobMB: { min: 10, max: 1000 },
 	historyLimit: { min: 100, max: 20000 },
+} as const;
+
+/** Same bounds as reading data.json (migrate.ts). */
+export const PREVIEW_BOUNDS = {
+	maxPdfMB: { min: 1, max: 100 },
+	maxTextMB: { min: 1, max: 20 },
 } as const;
 
 /** Vault folder paths, one per line or comma-separated, without surrounding slashes, deduplicated and sorted. */
@@ -112,6 +122,13 @@ export function setFieldOp(key: FieldKey, value: unknown): Op<void> {
 				draft.preview[key] = v;
 				break;
 			}
+			case 'maxPdfMB':
+			case 'maxTextMB': {
+				const v = within(value, PREVIEW_BOUNDS[key]);
+				if (v === undefined) return { ok: false, error: [] };
+				draft.preview[key] = v;
+				break;
+			}
 			case 'defaultConnectionId': {
 				const id = String(value);
 				// Checked against the latest settings: the connection may have been deleted meanwhile.
@@ -136,6 +153,12 @@ export function setFieldOp(key: FieldKey, value: unknown): Op<void> {
 				const v = within(value, UPLOAD_BOUNDS[key]);
 				if (v === undefined) return { ok: false, error: [] };
 				draft.upload[key === 'uploadMaxFileMB' ? 'maxFileMB' : 'maxJobMB'] = v;
+				break;
+			}
+			case 'uploadMaxOtherFileMB': {
+				const v = within(value, UPLOAD_BOUNDS.uploadMaxOtherFileMB);
+				if (v === undefined) return { ok: false, error: [] };
+				draft.upload.maxOtherFileMB = v;
 				break;
 			}
 			case 'excludeFolders':

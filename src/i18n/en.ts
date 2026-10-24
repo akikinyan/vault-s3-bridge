@@ -158,7 +158,9 @@ export const en = {
 	'insert.copied': 'Copied',
 	'insert.failed': 'Not inserted: {reason}',
 	'settings.preview': 'Preview',
-	'settings.maxFileMB': 'Maximum file size (MB)',
+	'settings.maxFileMB': 'Maximum image size (MB)',
+	'settings.maxPdfMB': 'Maximum PDF size (MB)',
+	'settings.maxTextMB': 'Maximum text file size (MB)',
 	'settings.maxMegapixels': 'Maximum image size (megapixels)',
 	'settings.cacheMB': 'Memory cache for hidden images (MB)',
 	'settings.cacheDesc': 'Images currently shown are kept regardless of this limit.',
@@ -371,7 +373,9 @@ export const en = {
 	'settings.webpQuality': 'WebP quality (%)',
 	'settings.stripPrivate': 'Remove metadata for private uploads too',
 	'settings.stripPrivateDesc': 'Metadata such as location is always removed for public uploads. When on, animated images cannot be uploaded to private storage.',
-	'settings.uploadMaxFileMB': 'Maximum file size for uploads (MB)',
+	'settings.uploadMaxFileMB': 'Maximum image size for uploads (MB)',
+	'settings.uploadMaxOtherFileMB': 'Maximum size of other files for uploads (MB)',
+	'settings.uploadMaxOtherFileDesc': 'Files that are not images, such as PDFs. Also the largest original offered for archiving.',
 	'settings.uploadMaxJobMB': 'Maximum total per run (MB)',
 	'settings.uploadMaxJobDesc': 'Files beyond this are left for the next run.',
 	'settings.excludeFolders': 'Excluded folders',
@@ -431,6 +435,9 @@ export const en = {
 	'restore.skipped.unsafe': '{path}: the path cannot be used.',
 	'restore.skipped.failed': '{path}: the move failed.',
 	'restore.stop.absent': 'There is no archive folder.',
+	'settings.archive': 'Archived files',
+	'settings.archiveOpen': 'Move archived files back',
+	'settings.archiveCount': '{n} file(s) in the archive folder.',
 } as const;
 
 export type MessageKey = keyof typeof en;

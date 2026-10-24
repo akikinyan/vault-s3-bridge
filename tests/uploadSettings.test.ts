@@ -34,10 +34,11 @@ describe('upload settings (11-3)', () => {
 		expect(await set('webpQuality', 73)).toBe(true);
 		expect(await set('stripPrivate', true)).toBe(true);
 		expect(await set('uploadMaxFileMB', 30)).toBe(true);
+		expect(await set('uploadMaxOtherFileMB', 60)).toBe(true);
 		expect(await set('uploadMaxJobMB', 500)).toBe(true);
 		expect(await set('excludeFolders', '/Private/\nArchive , Private\n\n')).toBe(true);
 		expect(await set('historyLimit', 5000)).toBe(true);
-		const expected = { defaultConnectionId: 'c1', webp: { enabled: true, quality: 0.73 }, stripPrivate: true, maxFileMB: 30, maxOtherFileMB: 100, maxJobMB: 500, excludeFolders: ['Archive', 'Private'] };
+		const expected = { defaultConnectionId: 'c1', webp: { enabled: true, quality: 0.73 }, stripPrivate: true, maxFileMB: 30, maxOtherFileMB: 60, maxJobMB: 500, excludeFolders: ['Archive', 'Private'] };
 		expect(s.current.upload).toEqual(expected);
 		expect(s.current.historyLimit).toBe(5000);
 		// The preview limit is a different setting.
@@ -48,6 +49,16 @@ describe('upload settings (11-3)', () => {
 		expect(again.current.historyLimit).toBe(5000);
 	});
 
+	it('saves the PDF and text preview limits, and reading data.json again keeps them', async () => {
+		const { s, io } = await store();
+		expect((await s.mutate(setFieldOp('maxPdfMB', 80))).ok).toBe(true);
+		expect((await s.mutate(setFieldOp('maxTextMB', 20))).ok).toBe(true);
+		expect(s.current.preview).toMatchObject({ maxFileMB: 20, maxPdfMB: 80, maxTextMB: 20 });
+		const again = new SettingsStore(io);
+		await again.reload();
+		expect(again.current.preview).toMatchObject({ maxPdfMB: 80, maxTextMB: 20 });
+	});
+
 	it('rejects values out of bounds without saving', async () => {
 		const { s } = await store();
 		const before = JSON.stringify(s.current);
@@ -56,6 +67,12 @@ describe('upload settings (11-3)', () => {
 			['webpQuality', 101],
 			['uploadMaxFileMB', 0],
 			['uploadMaxFileMB', 101],
+			['uploadMaxOtherFileMB', 0],
+			['uploadMaxOtherFileMB', 101],
+			['maxPdfMB', 0],
+			['maxPdfMB', 101],
+			['maxTextMB', 0],
+			['maxTextMB', 21],
 			['uploadMaxJobMB', 9],
 			['uploadMaxJobMB', 1001],
 			['historyLimit', 99],

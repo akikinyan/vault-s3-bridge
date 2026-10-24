@@ -87,7 +87,7 @@ A public URL reveals the key, so the settings warn when a public template uses `
 - If metadata cannot be removed, the image is not uploaded. The original bytes are never sent as a fallback.
 - **Convert to WebP when smaller**: when an image is re-encoded, a WebP version is also made and the smaller one is sent.
 - Images over 40 megapixels, and images whose size cannot be read from the header, are not uploaded.
-- **Maximum file size for uploads** applies to each image; images beyond **Maximum total per run** are left for the next run.
+- **Maximum image size for uploads** applies to each image; images beyond **Maximum total per run** are left for the next run.
 - Content-Type is set from the bytes that are sent. The plugin sets no ACL and no Cache-Control.
 
 ### Unfinished uploads
@@ -111,7 +111,7 @@ The plugin writes these files to `.obsidian/plugins/vault-s3-bridge/`:
 
 ### Archiving uploaded originals
 
-**Archive uploaded originals** moves source files that are already on the storage into `_s3-archive` in the vault, keeping their paths. Nothing is deleted, and **Move archived files back** returns them. A file is offered only if no text in the vault names it, the upload history has its current content, the storage still holds that content (checked by checksum), and no other file in the vault has the same name.
+**Archive uploaded originals** moves source files that are already on the storage into `_s3-archive` in the vault, keeping their paths. Nothing is deleted, and **Move archived files back** (a command, also under **Archived files** in the settings) returns them. A file is offered only if it is within the upload size limits, no text in the vault names it, the upload history has its current content, the storage still holds that content (checked by checksum), and no other file in the vault has the same name.
 
 A file counts as named when its file name appears anywhere in a text file of the vault, after decoding `%`, JSON, HTML and Markdown escapes. Matching is deliberately broad: a false match only keeps a file where it is.
 

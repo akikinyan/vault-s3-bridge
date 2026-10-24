@@ -165,8 +165,16 @@ function markerMessage(state: 'absent' | 'foreign' | 'newer' | 'invalid'): strin
 	return t(state === 'newer' ? 'archive.stop.marker-newer' : 'archive.stop.marker-invalid');
 }
 
+/** Design 9-3: one line on the archive folder for the settings tab. */
+export async function archiveStatus(app: App): Promise<string> {
+	const vault = archiveVault(app);
+	if (!vault) return t('archive.noAdapter');
+	const state = await archiveMarker(vault);
+	return state === 'valid' ? t('settings.archiveCount', { n: String(archivedFiles(vault).length) }) : markerMessage(state);
+}
+
 /** Design 8-8: archived files to choose from; the chosen ones go back where they were. Only a marked folder is listed. */
-export async function openRestore(host: Pick<UploadHost, 'app' | 'lock'>): Promise<void> {
+export async function openRestore(host: Pick<UploadHost, 'app' | 'lock'>, onRestored?: () => void): Promise<void> {
 	const vault = archiveVault(host.app);
 	if (!vault) {
 		new Notice(t('archive.noAdapter'));
@@ -225,5 +233,6 @@ export async function openRestore(host: Pick<UploadHost, 'app' | 'lock'>): Promi
 		}
 		const lines = [t('restore.result', { n: String(r.restored.length) }), ...r.skipped.map((s) => t(`restore.skipped.${s.reason}`, { path: s.path }))];
 		new Notice(lines.join('\n'), r.skipped.length > 0 ? 0 : undefined);
+		onRestored?.();
 	}
 }
