@@ -10,7 +10,7 @@ import type { DeepReadonly } from '../util/deepReadonly';
 import { publicUseOf } from './fileType';
 import { alternateKey } from './key';
 import type { NewPendingItem, PendingItem, PendingStore } from './pending';
-import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_MIN_TIMEOUT_MS, putCommand } from './s3';
+import { classifyS3Outcome, compareHead, type HeadContent, type HeadOutcome, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand } from './s3';
 import { afterHead, afterPut, type HeadStage, type Mode, type Next, type PutResult, resumePlan } from './transitions';
 
 export type ItemOutcome =
@@ -43,7 +43,7 @@ export interface UploaderDeps {
 	client: Pick<S3Client, 'send'>;
 	/** Job abort, authentication change, plugin unload. A request stopped by it is ours (6-2 row 1). */
 	signal: AbortSignal;
-	/** network.timeoutMs; a Put gets at least PUT_MIN_TIMEOUT_MS. */
+	/** network.timeoutMs for a Head; a Put is limited by inactivity only (PUT_REQUEST_TIMEOUT_MS). */
 	timeoutMs: number;
 	/**
 	 * Job-level conditions checked synchronously inside every checkpoint (10-3 items 1 to 3 beyond what the
@@ -273,7 +273,7 @@ class Group {
 			() =>
 				this.deps.client.send(putCommand(this.bucket, key, body, f.sentSha256, f.contentType), {
 					abortSignal: this.deps.signal,
-					requestTimeout: Math.max(this.deps.timeoutMs, PUT_MIN_TIMEOUT_MS),
+					requestTimeout: PUT_REQUEST_TIMEOUT_MS,
 				}),
 			() => (this.items().some((i) => this.deps.sourceChanged(i)) ? SOURCE_CHANGED : undefined),
 		);

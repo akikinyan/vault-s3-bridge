@@ -121,7 +121,8 @@ describe('sendGroup — order (7-2, 10-3)', () => {
 		]);
 		expect(s.settings.current.privateFiles).toEqual([SOURCE_A, SENT].sort());
 		expect(s.settings.current.history).toMatchObject([{ id: 'h1', key: 'k/a.png', target: 'aws:example-private', sourceSha256: SOURCE_A, sentSha256: SENT }]);
-		expect(s.s3.calls.map((c) => c.timeout)).toEqual([15_000, 60_000]);
+		// A Put has no total limit, only the handler's inactivity limit (design 2-3, rev.5).
+		expect(s.s3.calls.map((c) => c.timeout)).toEqual([15_000, 0]);
 		expect(s.s3.objects.get('k/a.png')).toBe(checksumOf(SENT));
 	});
 

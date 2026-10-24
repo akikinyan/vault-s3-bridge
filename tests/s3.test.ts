@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_MIN_TIMEOUT_MS, putCommand, uploadClient } from '../src/upload/s3';
+import { checksumOf, classifyS3Outcome, compareHead, headCommand, PUT_REQUEST_TIMEOUT_MS, putCommand, uploadClient } from '../src/upload/s3';
 
 interface Captured {
 	method: string;
@@ -60,7 +60,7 @@ async function headError(status: number): Promise<unknown> {
 describe('request headers (6-1)', () => {
 	it('Put: our SHA-256 checksum as sent, if-none-match, no CRC32, content type and length', async () => {
 		const { client, captured } = clientAnswering({ status: 200, headers: { etag: '"e"' } });
-		await client.send(putCommand('<bucket>', 'k/画像 1.png', BODY, SENT, 'image/png'), { requestTimeout: PUT_MIN_TIMEOUT_MS });
+		await client.send(putCommand('<bucket>', 'k/画像 1.png', BODY, SENT, 'image/png'), { requestTimeout: PUT_REQUEST_TIMEOUT_MS });
 		expect(captured).toHaveLength(1);
 		const h = captured[0]!.headers;
 		expect(captured[0]!.method).toBe('PUT');
@@ -73,8 +73,8 @@ describe('request headers (6-1)', () => {
 		expect(h['x-amz-acl']).toBeUndefined();
 		expect(h['x-amz-server-side-encryption']).toBeUndefined();
 		expect(Object.keys(h).filter((k) => k.startsWith('x-amz-meta-'))).toEqual([]);
-		// The per-request timeout reaches the HTTP handler (it overrides the handler's default).
-		expect(captured[0]!.requestTimeout).toBe(PUT_MIN_TIMEOUT_MS);
+		// The per-request timeout reaches the HTTP handler and overrides its default: 0 turns the total limit off.
+		expect(captured[0]!.requestTimeout).toBe(0);
 	});
 
 	it('Head asks for the checksum', async () => {

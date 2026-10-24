@@ -12,8 +12,12 @@ export function uploadClient(config: Pick<S3ClientConfig, 'region' | 'endpoint' 
 	return new S3Client({ ...config, maxAttempts: 1 });
 }
 
-/** A Put may take longer than an ordinary request: at least this long (6-1). */
-export const PUT_MIN_TIMEOUT_MS = 60_000;
+/**
+ * Design 2-3 (rev.5): a Put has no limit on its total time, only on inactivity (the handler's socketTimeout), and a
+ * long one is stopped by the user. The handler's requestTimeout runs until the response starts, so it would cut a
+ * large upload that is still sending; 0 turns it off for the Put.
+ */
+export const PUT_REQUEST_TIMEOUT_MS = 0;
 
 /** S3 expects the SHA-256 checksum as base64 of the raw digest. */
 export function checksumOf(sha256Hex: string): string {

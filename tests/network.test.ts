@@ -89,6 +89,73 @@ describe('createRequestHandler — timeouts', () => {
 			server.close();
 		}
 	});
+	describe('an upload that keeps sending (Step 4: a 100 MB Put was cut after 60 s)', () => {
+		/** Reads the whole body, then answers 200; `stall` never reads it. */
+		const uploadServer = async (stall = false) => {
+			const { createServer } = await import('node:http');
+			const server = createServer((req, res) => {
+				if (stall) return;
+				let n = 0;
+				req.on('data', (c: Buffer) => (n += c.length));
+				req.on('end', () => res.writeHead(200, { 'x-received': String(n) }).end());
+			});
+			await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+			return { server, port: (server.address() as { port: number }).port };
+		};
+		/** A PUT whose 8 chunks of 1 KB leave over about 1.2 s. */
+		const slowPut = async (port: number) => {
+			const { Readable } = await import('node:stream');
+			let n = 0;
+			const body = new Readable({
+				read() {
+					setTimeout(() => this.push(n++ < 8 ? Buffer.alloc(1024, n) : null), 150);
+				},
+			});
+			return { ...request(port), method: 'PUT', headers: { 'content-length': String(8 * 1024) }, body } as unknown as Parameters<ReturnType<typeof createRequestHandler>['handle']>[0];
+		};
+		const closing = (server: import('node:http').Server) => {
+			server.closeAllConnections();
+			server.close();
+		};
+
+		it('requestTimeout counts the time spent sending: the library cuts a slow upload', async () => {
+			const { server, port } = await uploadServer();
+			try {
+				const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 300 });
+				await expect(handler.handle(await slowPut(port))).rejects.toMatchObject({ name: 'TimeoutError' });
+				handler.destroy();
+			} finally {
+				closing(server);
+			}
+		});
+
+		it('with requestTimeout off for the request, the upload completes while data flows', async () => {
+			const { server, port } = await uploadServer();
+			try {
+				const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 300, socketTimeoutMs: 500 });
+				const { response } = await handler.handle(await slowPut(port), { requestTimeout: 0 });
+				expect(response.statusCode).toBe(200);
+				expect(response.headers['x-received']).toBe(String(8 * 1024));
+				handler.destroy();
+			} finally {
+				closing(server);
+			}
+		});
+
+		it('a stalled upload still ends after socketTimeout without data', async () => {
+			const { server, port } = await uploadServer(true);
+			try {
+				const handler = createRequestHandler({ connectionTimeoutMs: 1000, requestTimeoutMs: 300, socketTimeoutMs: 400 });
+				const t = Date.now();
+				await expect(handler.handle(request(port), { requestTimeout: 0 })).rejects.toMatchObject({ name: 'TimeoutError' });
+				expect(Date.now() - t).toBeLessThan(2000);
+				handler.destroy();
+			} finally {
+				closing(server);
+			}
+		});
+	});
+
 	it('does not cut a body that keeps arriving after the headers (a large preview on a slow line)', async () => {
 		const { createServer } = await import('node:http');
 		const server = createServer((_req, res) => {
