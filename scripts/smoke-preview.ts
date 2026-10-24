@@ -34,8 +34,9 @@ const cases: [string, string, string][] = [
 	['work', `${p}日本語 フォルダ/画像 (1).jpg`, 'ok'],
 	['work', `${p}記号/a!b'c*d#e?f%g.gif`, 'ok'],
 	['work', `${p}webp-1x1.webp`, 'ok'],
-	['work', `${p}vector.svg`, 'unsupported-svg'],
-	['work', `${p}not-image.txt`, 'unsupported-format'],
+	// Since design 7-1: SVG and text are shown when their content matches the extension.
+	['work', `${p}vector.svg`, 'svg'],
+	['work', `${p}not-image.txt`, 'text'],
 	['work', `${p}does-not-exist.png`, 'not-found'],
 	['nosuch', `${p}png-blue.png`, 'unknown-alias'],
 ];
