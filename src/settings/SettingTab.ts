@@ -108,8 +108,9 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 					},
 					{ name: t('settings.webp'), desc: t('settings.webpDesc'), control: { type: 'toggle', key: 'webpEnabled' } },
 					{
+						// Shown even when conversion is off: re-encoding a WebP source uses this quality too.
 						name: t('settings.webpQuality'),
-						visible: settings.upload.webp.enabled,
+						desc: t('settings.webpQualityDesc'),
 						control: { type: 'slider', key: 'webpQuality', min: UPLOAD_BOUNDS.webpQualityPercent.min, max: UPLOAD_BOUNDS.webpQualityPercent.max, step: 1 },
 					},
 					{ name: t('settings.stripPrivate'), desc: t('settings.stripPrivateDesc'), control: { type: 'toggle', key: 'stripPrivate' } },
@@ -388,9 +389,11 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		const k = key as ControlKey;
 		// Text fields save once typing pauses: every save re-reads and rewrites data.json.
 		if (k === 'proxyUrl' || k === 'noProxy' || k === 'excludeFolders') {
-			if (k === 'proxyUrl' && validateProxyUrl(String(value).trim() || undefined)) return;
+			// Drop the save queued for earlier text first, so an invalid URL never lets the previous one be saved.
 			const previous = this.pendingText.get(k);
 			if (previous) window.clearTimeout(previous.timer);
+			this.pendingText.delete(k);
+			if (k === 'proxyUrl' && validateProxyUrl(String(value).trim() || undefined)) return;
 			const timer = window.setTimeout(() => {
 				this.pendingText.delete(k);
 				void this.applyControl(k, value);
@@ -430,7 +433,6 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				this.plugin.scheduleRecreatePreview();
 				return;
 			case 'language':
-			case 'webpEnabled':
 				this.update();
 				return;
 			case 'maxFileMB':

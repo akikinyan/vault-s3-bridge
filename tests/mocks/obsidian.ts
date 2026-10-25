@@ -6,3 +6,11 @@ export class Modal {}
 export class MarkdownView {}
 export class TFile {}
 export class Setting {}
+export class PluginSettingTab {
+	constructor(
+		public app: unknown,
+		public plugin: unknown,
+	) {}
+	update(): void {}
+	hide(): void {}
+}
