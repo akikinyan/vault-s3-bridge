@@ -14,6 +14,7 @@ import { PreviewService } from './service';
 export function createPreviewStack(settings: () => DeepReadonly<PluginSettings>, device: () => DeepReadonly<DeviceState>): { service: PreviewService; handler: NodeHttpHandler } {
 	const network = settings().network;
 	const handler = createRequestHandler({
+		proxyMode: network.proxyMode,
 		proxyUrl: network.proxyUrl,
 		noProxy: network.noProxy,
 		connectionTimeoutMs: CONNECT_TIMEOUT_MS,

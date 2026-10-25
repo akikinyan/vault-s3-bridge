@@ -98,6 +98,7 @@ export async function runConnectionTest(
 	if (signal?.aborted) return finishAborted();
 
 	const handler = deps.createRequestHandler({
+		proxyMode: options.network.proxyMode,
 		proxyUrl: options.network.proxyUrl,
 		noProxy: options.network.noProxy,
 		connectionTimeoutMs: CONNECT_TIMEOUT_MS,

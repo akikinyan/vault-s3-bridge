@@ -144,3 +144,16 @@ describe('connection checks (11-3, plan 2-8)', () => {
 		expect(keys({ ...priv, keyTemplate: 'k/../{hash}' })).toEqual(['edit.templateInvalid']);
 	});
 });
+
+describe('proxy mode', () => {
+	it('saves a known mode and keeps the URL; rejects others', async () => {
+		const { s } = await store();
+		expect((await s.mutate(setFieldOp('proxyUrl', 'http://proxy.example.com:8080'))).ok).toBe(true);
+		for (const mode of ['system', 'none', 'url']) {
+			expect((await s.mutate(setFieldOp('proxyMode', mode))).ok).toBe(true);
+			expect(s.current.network).toMatchObject({ proxyMode: mode, proxyUrl: 'http://proxy.example.com:8080' });
+		}
+		expect((await s.mutate(setFieldOp('proxyMode', 'pac'))).ok).toBe(false);
+		expect(s.current.network.proxyMode).toBe('url');
+	});
+});

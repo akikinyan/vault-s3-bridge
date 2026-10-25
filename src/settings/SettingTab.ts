@@ -1,5 +1,6 @@
-import { type App, Notice, PluginSettingTab, type SettingDefinition, type SettingDefinitionItem } from 'obsidian';
+import { type App, Notice, Platform, PluginSettingTab, type SettingDefinition, type SettingDefinitionItem } from 'obsidian';
 import { listSsoProfileNames, loadSharedConfig } from '../aws/profiles';
+import { readSystemProxy, type SystemProxy } from '../aws/systemProxy';
 import { t, type MessageKey } from '../i18n';
 import { confirm } from '../ui/ConfirmModal';
 import { ConnectionEditModal } from '../ui/ConnectionEditModal';
@@ -139,8 +140,15 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				heading: t('settings.network'),
 				items: [
 					{
+						name: t('settings.proxyMode'),
+						desc: t('settings.proxyModeDesc'),
+						control: { type: 'dropdown', key: 'proxyMode', options: this.proxyModeOptions() },
+					},
+					this.systemProxyDefinition(),
+					{
 						name: t('settings.proxy'),
 						desc: t('settings.proxyDesc'),
+						visible: settings.network.proxyMode === 'url',
 						control: {
 							type: 'text',
 							key: 'proxyUrl',
@@ -151,7 +159,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 							},
 						},
 					},
-					{ name: t('settings.noProxy'), desc: t('settings.noProxyDesc'), control: { type: 'text', key: 'noProxy' } },
+					{ name: t('settings.noProxy'), desc: t('settings.noProxyDesc'), visible: settings.network.proxyMode !== 'none', control: { type: 'text', key: 'noProxy' } },
 					{ name: t('settings.timeout'), control: { type: 'number', key: 'timeoutSeconds', min: 1, max: 300, step: 1 } },
 				],
 			},
@@ -270,6 +278,41 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		};
 	}
 
+	/** The system settings are offered only on macOS, or when another device already chose them (data.json is shared). */
+	private proxyModeOptions(): Record<string, string> {
+		const options: Record<string, string> = { none: t('settings.proxyMode.none'), url: t('settings.proxyMode.url') };
+		if (Platform.isMacOS || this.plugin.settings.network.proxyMode === 'system') options.system = t('settings.proxyMode.system');
+		return options;
+	}
+
+	/** What the 'system' mode uses on this device, read again on every render and on request. */
+	private systemProxyDefinition(): SettingDefinition<ControlKey> {
+		const describe = (p: SystemProxy): string => {
+			if (p.kind === 'direct') return t(`settings.systemProxy.${p.reason}`);
+			const direct = [...p.exceptions, ...(p.excludeSimpleHostnames ? [t('settings.systemProxy.simpleHostnames')] : [])];
+			return t('settings.systemProxy.proxy', { url: p.url, exceptions: direct.length > 0 ? direct.join(', ') : t('settings.systemProxy.noExceptions') });
+		};
+		return {
+			name: t('settings.systemProxy'),
+			visible: this.plugin.settings.network.proxyMode === 'system',
+			render: (setting) => {
+				let shown = true;
+				const refresh = () => {
+					setting.setDesc(t('settings.systemProxy.checking'));
+					void readSystemProxy().then((p) => {
+						if (shown) setting.setDesc(`${t('settings.systemProxyDesc')} ${describe(p)}`);
+					});
+				};
+				setting.setName(t('settings.systemProxy'));
+				refresh();
+				setting.addButton((b) => b.setButtonText(t('settings.systemProxy.reload')).onClick(refresh));
+				return () => {
+					shown = false;
+				};
+			},
+		};
+	}
+
 	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
 	private async refreshPending(always = true): Promise<void> {
 		const others = (await this.plugin.pending?.others()) ?? [];
@@ -291,6 +334,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	getControlValue(key: string): unknown {
 		const s = this.plugin.settings;
 		switch (key as ControlKey) {
+			case 'proxyMode':
+				return s.network.proxyMode;
 			case 'proxyUrl':
 				return s.network.proxyUrl ?? '';
 			case 'noProxy':
@@ -367,6 +412,10 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	private async applyControl(key: ControlKey, value: unknown): Promise<void> {
 		if (!(await this.plugin.setField(key, value))) return;
 		switch (key) {
+			case 'proxyMode':
+				this.plugin.scheduleRecreatePreview();
+				this.update();
+				return;
 			case 'proxyUrl':
 			case 'noProxy':
 			case 'timeoutSeconds':

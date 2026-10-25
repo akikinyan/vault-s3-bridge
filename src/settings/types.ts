@@ -41,7 +41,12 @@ export interface AliasResolution {
 	knownResolutions: string[];
 }
 
+/** No proxy, the proxy URL below, or the operating system's settings (macOS only). */
+export type ProxyMode = 'none' | 'url' | 'system';
+
 export interface NetworkSettings {
+	proxyMode: ProxyMode;
+	/** Kept when another mode is chosen, so that switching back restores it. */
 	proxyUrl?: string;
 	noProxy?: string;
 	/** Per-request timeout in milliseconds. */
@@ -148,7 +153,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	history: [],
 	historyLimit: DEFAULT_HISTORY_LIMIT,
 	upload: { ...DEFAULT_UPLOAD, webp: { ...DEFAULT_UPLOAD.webp }, excludeFolders: [] },
-	network: { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
+	network: { proxyMode: 'none', timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
 	preview: { ...DEFAULT_PREVIEW },
 	language: 'auto',
 };

@@ -1,6 +1,6 @@
 // Local-only: runs the plugin's connection diagnostics from Node against real AWS.
 // Reads local/dev.json ({ profile, region, bucket, proxyUrl?, noProxy? }). Never used in CI.
-//   npm run smoke:aws [-- --write] [--bucket <name>] [--proxy <url>] [--no-proxy <list>] [--verbose]
+//   npm run smoke:aws [-- --write] [--bucket <name>] [--proxy <url> | --system-proxy] [--no-proxy <list>] [--verbose]
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { runConnectionTest } from '../src/diagnostics/connectionTest';
 import { DEFAULT_REQUEST_TIMEOUT_MS, type StorageConnection } from '../src/settings/types';
@@ -29,6 +29,8 @@ const replacements = [
 	[dev.profile, '<profile>'],
 ] as const;
 
+const proxyUrl = option('--proxy') ?? dev.proxyUrl;
+
 const connection: StorageConnection = {
 	id: 'smoke',
 	alias: 'smoke',
@@ -42,7 +44,8 @@ const connection: StorageConnection = {
 const report = await runConnectionTest(connection, {
 	profile: dev.profile,
 	network: {
-		proxyUrl: option('--proxy') ?? dev.proxyUrl,
+		proxyMode: flag('--system-proxy') ? 'system' : proxyUrl ? 'url' : 'none',
+		proxyUrl,
 		noProxy: option('--no-proxy') ?? dev.noProxy,
 		timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
 	},
