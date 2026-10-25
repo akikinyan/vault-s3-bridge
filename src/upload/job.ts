@@ -607,7 +607,7 @@ export interface FileResult {
 }
 
 /** Why the note was not replaced, so the Markdown was copied instead. */
-export type NoteFallback = Extract<ApplyResult, { reason: 'closed' | 'deleted' | 'changed' }>;
+export type NoteFallback = Extract<ApplyResult, { reason: 'closed' | 'deleted' | 'moved' | 'changed' }>;
 
 export type LinkResult = { kind: 'none' } | { kind: 'applied'; apply: ApplyResult } | { kind: 'copied'; ok: boolean; fallback?: NoteFallback };
 

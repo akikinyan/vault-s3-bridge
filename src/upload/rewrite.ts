@@ -214,13 +214,19 @@ export interface EditorLike {
 	transaction(tx: { changes: { from: { line: number; ch: number }; to: { line: number; ch: number }; text: string }[] }): void;
 }
 
+/**
+ * Where the note is compared with where the job found it: the same file at the same path, the same file at another
+ * path (renamed or moved), or no longer there (deleted, or another file made at the same path).
+ */
+export type NoteIdentity = 'same' | 'moved' | 'deleted';
+
 /** What 9-2 needs to know about the note when the job applies the replacements. */
 export interface NoteAccess {
 	/** Loaded editors that show the note now (any tab position). */
 	openEditors(): EditorLike[];
 	/** The note was open in an editor when the job started. */
 	wasOpenAtStart: boolean;
-	exists(): boolean;
+	identity(): NoteIdentity;
 	/** vault.process: the returned text is written only if it differs. */
 	process(fn: (data: string) => string): Promise<string>;
 	read(): Promise<string>;
@@ -228,19 +234,23 @@ export interface NoteAccess {
 
 export type ApplyResult =
 	| { applied: true; via: 'editor' | 'file'; verified: boolean }
-	| { applied: false; reason: 'closed' | 'deleted' | 'changed' }
+	| { applied: false; reason: 'closed' | 'deleted' | 'moved' | 'changed' }
 	/** `allowed` said no at the moment of writing. */
 	| { applied: false; reason: 'blocked' };
 
 /**
  * 9-2: one editor transaction (in the same synchronous step as the check) when the note is open, otherwise
  * vault.process that writes only over the exact snapshot. If neither applies, nothing is replaced at all.
- * `allowed` is asked in that same synchronous step, so a condition that changed while waiting is seen.
+ * `allowed` and the note's identity are asked in that same synchronous step (inside the callback for a closed
+ * note), so a condition that changed while waiting is seen. A renamed or moved note is never written: an editor
+ * still shows it and vault.process still finds it, so the identity is checked on both paths.
  */
 export async function applyToNote(note: NoteAccess, snapshot: string, replacements: readonly Replacement[], allowed: () => boolean = () => true): Promise<ApplyResult> {
 	const next = replaceRanges(snapshot, replacements);
 	const editor = note.openEditors()[0];
 	if (editor) {
+		const where = note.identity();
+		if (where !== 'same') return { applied: false, reason: where };
 		if (editor.getValue() !== toLf(snapshot)) return { applied: false, reason: 'changed' };
 		if (!allowed()) return { applied: false, reason: 'blocked' };
 		const changes = [...replacements]
@@ -254,14 +264,19 @@ export async function applyToNote(note: NoteAccess, snapshot: string, replacemen
 		return { applied: true, via: 'editor', verified: editor.getValue() === toLf(next) };
 	}
 	if (note.wasOpenAtStart) return { applied: false, reason: 'closed' };
-	if (!note.exists()) return { applied: false, reason: 'deleted' };
+	const before = note.identity();
+	if (before !== 'same') return { applied: false, reason: before };
+	let where: NoteIdentity = 'same';
 	let matched = false;
 	let blocked = false;
 	await note.process((data) => {
+		where = note.identity();
+		if (where !== 'same') return data;
 		matched = data === snapshot;
 		blocked = matched && !allowed();
 		return matched && !blocked ? next : data;
 	});
+	if (where !== 'same') return { applied: false, reason: where };
 	if (!matched) return { applied: false, reason: 'changed' };
 	if (blocked) return { applied: false, reason: 'blocked' };
 	return { applied: true, via: 'file', verified: (await note.read()) === next };

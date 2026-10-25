@@ -10,6 +10,7 @@ import {
 	type EditorLike,
 	lfOffset,
 	type NoteAccess,
+	type NoteIdentity,
 	publicUrl,
 	type Replacement,
 	replaceRanges,
@@ -125,13 +126,20 @@ class FakeEditor implements EditorLike {
 	}
 }
 
-function noteWith(disk: string | undefined, editors: FakeEditor[], wasOpenAtStart = editors.length > 0): NoteAccess & { disk: string | undefined } {
-	const n = {
+function noteWith(
+	disk: string | undefined,
+	editors: FakeEditor[],
+	wasOpenAtStart = editors.length > 0,
+): NoteAccess & { disk: string | undefined; where: NoteIdentity | undefined; beforeCallback?: () => void } {
+	const n: NoteAccess & { disk: string | undefined; where: NoteIdentity | undefined; beforeCallback?: () => void } = {
 		disk,
+		/** Unset: the note is where it was unless it has no text on disk. */
+		where: undefined,
 		openEditors: () => editors,
 		wasOpenAtStart,
-		exists: () => n.disk !== undefined,
+		identity: () => n.where ?? (n.disk !== undefined ? 'same' : 'deleted'),
 		process: (fn: (d: string) => string) => {
+			n.beforeCallback?.();
 			const next = fn(n.disk!);
 			n.disk = next;
 			return Promise.resolve(next);
@@ -186,6 +194,51 @@ describe('applyToNote (9-2)', () => {
 	it('open at the start and closed now, or deleted: copy instead', async () => {
 		expect(await applyToNote(noteWith(snapshot, [], true), snapshot, reps)).toEqual({ applied: false, reason: 'closed' });
 		expect(await applyToNote(noteWith(undefined, [], false), snapshot, reps)).toEqual({ applied: false, reason: 'deleted' });
+	});
+
+	it('renamed or moved since the job started, closed: nothing written', async () => {
+		const n = noteWith(snapshot, [], false);
+		n.where = 'moved';
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'moved' });
+		expect(n.disk).toBe(snapshot);
+	});
+
+	it('renamed while open: the editor is not written, even with the same text', async () => {
+		const editor = new FakeEditor(lf(snapshot));
+		const n = noteWith(snapshot, [editor]);
+		n.where = 'moved';
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'moved' });
+		expect(editor.transactions).toBe(0);
+	});
+
+	it('renamed and edited: moved is told before changed', async () => {
+		const editor = new FakeEditor(`${lf(snapshot)}typed`);
+		const n = noteWith(snapshot, [editor]);
+		n.where = 'moved';
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'moved' });
+	});
+
+	it('deleted or made again at the same path while an editor of the old note is still there: deleted', async () => {
+		const editor = new FakeEditor(lf(snapshot));
+		const n = noteWith(snapshot, [editor]);
+		n.where = 'deleted';
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'deleted' });
+		expect(editor.transactions).toBe(0);
+	});
+
+	it('closed when it was open at the start is told before a rename', async () => {
+		const n = noteWith(snapshot, [], true);
+		n.where = 'moved';
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'closed' });
+	});
+
+	it('renamed between the check and vault.process calling back: nothing written', async () => {
+		const n = noteWith(snapshot, [], false);
+		n.beforeCallback = () => {
+			n.where = 'moved';
+		};
+		expect(await applyToNote(n, snapshot, reps)).toEqual({ applied: false, reason: 'moved' });
+		expect(n.disk).toBe(snapshot);
 	});
 });
 

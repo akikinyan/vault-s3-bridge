@@ -86,13 +86,20 @@ export function resolveLink(app: App, notePath: string, linkpath: string): Sourc
 	};
 }
 
-/** 9-2 for the note; `wasOpenAtStart` uses the same test as `openEditors`. */
+/**
+ * 9-2 for the note; `wasOpenAtStart` uses the same test as `openEditors`. The path is fixed now: a rename keeps the
+ * TFile and changes only its path (Phase 5 Step 1), so comparing the file with itself would not see it.
+ */
 export function noteAccess(app: App, file: TFile): NoteAccess {
 	const editors = (): EditorLike[] => openViews(app, file).map((v) => v.editor);
+	const path = file.path;
 	return {
 		openEditors: editors,
 		wasOpenAtStart: editors().length > 0,
-		exists: () => app.vault.getFileByPath(file.path) === file,
+		identity: () => {
+			if (file.path !== path) return app.vault.getFileByPath(file.path) === file ? 'moved' : 'deleted';
+			return app.vault.getFileByPath(path) === file ? 'same' : 'deleted';
+		},
 		process: (fn) => app.vault.process(file, fn),
 		read: () => app.vault.read(file),
 	};

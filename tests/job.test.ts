@@ -162,7 +162,7 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 	const note_: NoteAccess = {
 		openEditors: () => w.editors,
 		wasOpenAtStart: false,
-		exists: () => w.disk.text !== undefined,
+		identity: () => (w.disk.text !== undefined ? 'same' : 'deleted'),
 		process: (fn) => {
 			const next = fn(w.disk.text!);
 			w.disk.text = next;

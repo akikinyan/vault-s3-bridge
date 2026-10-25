@@ -198,9 +198,10 @@ const ABORT_KEY: Record<NonNullable<JobResult['aborted']>, MessageKey> = {
 	'auth-changed': 'upload.result.abortedAuth',
 };
 
-const FALLBACK_KEY: Record<'closed' | 'deleted' | 'changed', MessageKey> = {
+const FALLBACK_KEY: Record<'closed' | 'deleted' | 'moved' | 'changed', MessageKey> = {
 	closed: 'upload.result.fallbackClosed',
 	deleted: 'upload.result.fallbackDeleted',
+	moved: 'upload.result.fallbackMoved',
 	changed: 'upload.result.fallbackChanged',
 };
 
