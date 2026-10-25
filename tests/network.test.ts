@@ -2,7 +2,8 @@ import { Agent as HttpsAgent } from 'node:https';
 import type { ClientRequest } from 'node:http';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { describe, expect, it } from 'vitest';
-import { createRequestHandler, matchesNoProxy, RoutingProxyAgent } from '../src/aws/network';
+import { createHttpsAgent, createRequestHandler, matchesNoProxy, RoutingProxyAgent, SYSTEM_PROXY_TTL_MS, SystemProxyAgent } from '../src/aws/network';
+import type { SystemProxy } from '../src/aws/systemProxy';
 import { validateProxyUrl } from '../src/settings/validate';
 
 describe('matchesNoProxy', () => {
@@ -44,6 +45,99 @@ describe('createRequestHandler', () => {
 		const proxied = createRequestHandler({ proxyUrl: 'http://127.0.0.1:3128', connectionTimeoutMs: 1000, requestTimeoutMs: 1000 });
 		direct.destroy();
 		proxied.destroy();
+	});
+});
+
+describe('createHttpsAgent — proxy modes', () => {
+	const url = 'http://127.0.0.1:3128';
+	const system = (): Promise<SystemProxy> => Promise.resolve({ kind: 'direct', reason: 'not-enabled' });
+
+	it('connects directly without a proxy, and keeps the URL unused', () => {
+		expect(createHttpsAgent({ proxyMode: 'none', proxyUrl: url })).toBeUndefined();
+		expect(createHttpsAgent({ proxyMode: 'url' })).toBeUndefined();
+		expect(createHttpsAgent({})).toBeUndefined();
+	});
+
+	it('uses the URL in the url mode, and without a mode when one is given', () => {
+		expect(createHttpsAgent({ proxyMode: 'url', proxyUrl: url })).toBeInstanceOf(RoutingProxyAgent);
+		expect(createHttpsAgent({ proxyUrl: url })).toBeInstanceOf(RoutingProxyAgent);
+	});
+
+	it('follows the system settings in the system mode, whatever the URL', () => {
+		const agent = createHttpsAgent({ proxyMode: 'system', proxyUrl: url, systemProxy: system });
+		expect(agent).toBeInstanceOf(SystemProxyAgent);
+		agent?.destroy();
+	});
+
+	it('creates a handler for each mode', () => {
+		for (const proxyMode of ['none', 'url', 'system'] as const) createRequestHandler({ proxyMode, proxyUrl: url, systemProxy: system, connectionTimeoutMs: 1000, requestTimeoutMs: 1000 }).destroy();
+	});
+});
+
+describe('SystemProxyAgent', () => {
+	const req = {} as ClientRequest;
+	const opts = (host: string) => ({ host, port: 443, secureEndpoint: true });
+	const proxy = (over: Partial<Extract<SystemProxy, { kind: 'proxy' }>> = {}): SystemProxy => ({
+		kind: 'proxy',
+		url: 'http://127.0.0.1:3128',
+		exceptions: ['*.local', '169.254/16', 'internal.example'],
+		excludeSimpleHostnames: false,
+		...over,
+	});
+
+	it('uses the system proxy, except for its exceptions and the plugin NO_PROXY list', async () => {
+		const agent = new SystemProxyAgent(() => Promise.resolve(proxy()), 'minio.example.org');
+		expect(await agent.connect(req, opts('s3.ap-northeast-1.amazonaws.com'))).toBeInstanceOf(HttpsProxyAgent);
+		expect(await agent.connect(req, opts('nas.local'))).not.toBeInstanceOf(HttpsProxyAgent);
+		expect(await agent.connect(req, opts('minio.internal.example'))).not.toBeInstanceOf(HttpsProxyAgent);
+		expect(await agent.connect(req, opts('minio.example.org'))).not.toBeInstanceOf(HttpsProxyAgent);
+		// An address range never matches a host name.
+		expect(await agent.connect(req, opts('169.254.169.254'))).toBeInstanceOf(HttpsProxyAgent);
+		// Simple host names go through the proxy unless the system excludes them.
+		expect(await agent.connect(req, opts('intranet'))).toBeInstanceOf(HttpsProxyAgent);
+		agent.destroy();
+	});
+
+	it('contacts simple host names directly when the system excludes them', async () => {
+		const agent = new SystemProxyAgent(() => Promise.resolve(proxy({ excludeSimpleHostnames: true })), undefined);
+		expect(await agent.connect(req, opts('intranet'))).toBeInstanceOf(HttpsAgent);
+		expect(await agent.connect(req, opts('intranet'))).not.toBeInstanceOf(HttpsProxyAgent);
+		expect(await agent.connect(req, opts('s3.amazonaws.com'))).toBeInstanceOf(HttpsProxyAgent);
+		agent.destroy();
+	});
+
+	it.each(['not-enabled', 'auto-config', 'unsupported-platform', 'unavailable'] as const)('connects directly when the system gives no proxy (%s)', async (reason) => {
+		const agent = new SystemProxyAgent(() => Promise.resolve({ kind: 'direct', reason }), undefined);
+		const target = await agent.connect(req, opts('s3.amazonaws.com'));
+		expect(target).toBeInstanceOf(HttpsAgent);
+		expect(target).not.toBeInstanceOf(HttpsProxyAgent);
+		agent.destroy();
+	});
+
+	it('reads the system settings again once the cache expires, and reuses the agent of a proxy', async () => {
+		let now = 0;
+		let reads = 0;
+		let current: SystemProxy = proxy();
+		const agent = new SystemProxyAgent(
+			() => {
+				reads++;
+				return Promise.resolve(current);
+			},
+			undefined,
+			() => now,
+		);
+		const first = await agent.connect(req, opts('s3.amazonaws.com'));
+		now = SYSTEM_PROXY_TTL_MS - 1;
+		current = { kind: 'direct', reason: 'not-enabled' };
+		expect(await agent.connect(req, opts('s3.amazonaws.com'))).toBe(first);
+		expect(reads).toBe(1);
+		now = SYSTEM_PROXY_TTL_MS;
+		expect(await agent.connect(req, opts('s3.amazonaws.com'))).not.toBeInstanceOf(HttpsProxyAgent);
+		expect(reads).toBe(2);
+		now = 2 * SYSTEM_PROXY_TTL_MS;
+		current = proxy();
+		expect(await agent.connect(req, opts('s3.amazonaws.com'))).toBe(first);
+		agent.destroy();
 	});
 });
 

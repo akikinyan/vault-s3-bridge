@@ -18,6 +18,7 @@ import { uploadClient } from './s3';
 export function jobClients(store: Pick<SettingsStore, 'current' | 'device'>, connectionId: string): { client(signal: AbortSignal): Promise<S3Client>; destroy(): void } {
 	const network = store.current.network;
 	const handler: NodeHttpHandler = createRequestHandler({
+		proxyMode: network.proxyMode,
 		proxyUrl: network.proxyUrl,
 		noProxy: network.noProxy,
 		connectionTimeoutMs: CONNECT_TIMEOUT_MS,

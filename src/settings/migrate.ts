@@ -11,6 +11,7 @@ import {
 	DEFAULT_UPLOAD,
 	type LanguageSetting,
 	type PluginSettings,
+	type ProxyMode,
 	type StorageConnection,
 	type UploadSettings,
 } from './types';
@@ -48,6 +49,13 @@ function nonNegative(value: unknown, fallback: number): number {
 
 function between(value: unknown, min: number, max: number, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
+/** Before the mode existed, a proxy URL meant using it. An unknown mode connects directly (fail safe). */
+function proxyModeOf(network: Record<string, unknown>): ProxyMode {
+	const mode = network.proxyMode;
+	if (mode === 'none' || mode === 'url' || mode === 'system') return mode;
+	return mode === undefined && str(network.proxyUrl) ? 'url' : 'none';
 }
 
 function normalizeUpload(raw: unknown): UploadSettings {
@@ -137,6 +145,7 @@ export function loadSettings(raw: unknown, device: DeviceState): LoadResult {
 		connections,
 		...records,
 		network: {
+			proxyMode: proxyModeOf(network),
 			proxyUrl: str(network.proxyUrl),
 			noProxy: str(network.noProxy),
 			timeoutMs: positive(network.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),

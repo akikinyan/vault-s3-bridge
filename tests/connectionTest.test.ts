@@ -69,7 +69,7 @@ function setup(o: Setup = {}) {
 }
 
 const status = (report: DiagnosticReport) => Object.fromEntries(report.items.map((i) => [i.id, `${i.status}${i.code ? `:${i.code}` : ''}`]));
-const network = { timeoutMs: 1000 };
+const network = { proxyMode: 'none' as const, timeoutMs: 1000 };
 const profile = 'sso';
 
 describe('runConnectionTest — authentication gate', () => {

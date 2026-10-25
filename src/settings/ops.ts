@@ -42,6 +42,7 @@ export function resolveConflictOp(alias: string, target: string, id: string): Op
 }
 
 export type FieldKey =
+	| 'proxyMode'
 	| 'proxyUrl'
 	| 'noProxy'
 	| 'timeoutSeconds'
@@ -94,6 +95,10 @@ export function setFieldOp(key: FieldKey, value: unknown): Op<void> {
 	};
 	return (draft) => {
 		switch (key) {
+			case 'proxyMode':
+				if (value !== 'none' && value !== 'url' && value !== 'system') return { ok: false, error: [] };
+				draft.network.proxyMode = value;
+				break;
 			case 'proxyUrl': {
 				const v = String(value).trim() || undefined;
 				if (validateProxyUrl(v)) return { ok: false, error: ['error.proxy-invalid'] };

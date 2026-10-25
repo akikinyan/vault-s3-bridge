@@ -150,3 +150,35 @@ describe('loadSettings — cache budget', () => {
 		expect(reloaded.preview.cacheMB).toBe(0);
 	});
 });
+
+describe('loadSettings — proxy mode', () => {
+	const load = (network: Record<string, unknown>) => loadSettings({ schemaVersion: 4, network: { timeoutMs: 15000, ...network } }, emptyDeviceState());
+
+	it('derives the mode from the proxy URL for settings saved before it existed', () => {
+		expect(load({}).settings.network.proxyMode).toBe('none');
+		expect(load({ proxyUrl: '  ' }).settings.network.proxyMode).toBe('none');
+		const withUrl = load({ proxyUrl: 'http://proxy.example.com:8080', noProxy: 'internal.example' });
+		expect(withUrl.settings.network).toEqual({ proxyMode: 'url', proxyUrl: 'http://proxy.example.com:8080', noProxy: 'internal.example', timeoutMs: 15000 });
+		expect(withUrl.changed).toBe(true);
+	});
+
+	it('keeps each mode, and the URL when another mode is chosen', () => {
+		for (const proxyMode of ['none', 'url', 'system']) {
+			const { settings } = load({ proxyMode, proxyUrl: 'http://proxy.example.com:8080' });
+			expect(settings.network).toMatchObject({ proxyMode, proxyUrl: 'http://proxy.example.com:8080' });
+			const reloaded = loadSettings(serializeSettings(settings), emptyDeviceState());
+			expect(reloaded.settings.network.proxyMode).toBe(proxyMode);
+			expect(reloaded.changed).toBe(false);
+		}
+	});
+
+	it('connects directly for an unknown mode (fail safe)', () => {
+		expect(load({ proxyMode: 'pac', proxyUrl: 'http://proxy.example.com:8080' }).settings.network.proxyMode).toBe('none');
+		expect(load({ proxyMode: 1 }).settings.network.proxyMode).toBe('none');
+	});
+
+	it('defaults to no proxy', () => {
+		expect(loadSettings({}, emptyDeviceState()).settings.network.proxyMode).toBe('none');
+		expect(DEFAULT_SETTINGS.network.proxyMode).toBe('none');
+	});
+});

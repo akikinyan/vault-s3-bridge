@@ -4,6 +4,7 @@ node_modules/
 # Build output
 main.js
 *.map
+.esbuild-meta.json
 
 # Private / local-only (never commit)
 local/
