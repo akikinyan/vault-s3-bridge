@@ -1,6 +1,6 @@
 {
 	"name": "vault-s3-bridge",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Manage Obsidian attachments on AWS S3 and S3-compatible storage, with IAM Role authentication and private previews.",
 	"main": "main.js",
 	"type": "module",

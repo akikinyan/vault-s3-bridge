@@ -1,8 +1,8 @@
 # Vault S3 Bridge
 
-> Status: early development. Not ready for use.
+> Status: **preview (0.1.0)**. An early public version: it has not been reviewed by Obsidian, and settings or behaviour may change between versions. Keep backups of your vault.
 
-An Obsidian plugin for managing attachments on AWS S3 and S3-compatible storage.
+An Obsidian plugin for managing attachments on AWS S3.
 
 - Authenticates to AWS with IAM Role temporary credentials (IAM Identity Center / SSO). Long-term IAM user access keys are not supported.
 - Separates **public** storage (shareable URLs) from **private** storage (authenticated preview inside Obsidian).
@@ -10,6 +10,17 @@ An Obsidian plugin for managing attachments on AWS S3 and S3-compatible storage.
 - Files registered as private cannot be converted to public through the plugin.
 
 Desktop only. Tested on macOS.
+
+Supported in this preview: **AWS S3** general purpose buckets, with **IAM Identity Center (SSO)** profiles. The connection settings also accept a custom endpoint for S3-compatible storage, but that is not supported yet: it has not been tested, and S3-compatible services differ in the features the plugin relies on (see **Required permissions**).
+
+## Installation
+
+The plugin is not in Obsidian's community plugin list yet. Install it from a GitHub release:
+
+- With [BRAT](https://github.com/TfTHacker/obsidian42-brat): add this repository as a beta plugin.
+- By hand: download `main.js`, `manifest.json` and `styles.css` from the latest release into `<vault>/.obsidian/plugins/vault-s3-bridge/`, then enable **Vault S3 Bridge** under **Settings → Community plugins**.
+
+Then sign in with `aws sso login --profile <profile>`, add a storage connection in the plugin's settings and choose the profile for it on this device.
 
 ## Private references
 
@@ -59,7 +70,7 @@ The connection used is the **Default connection** from the settings; otherwise y
 
 The confirmation screen shows, for each file, its status, format and Content-Type, the object key, the size before and after conversion and the Markdown that will be written. Files that are not uploaded are listed with the reason. Then choose:
 
-- **Upload and replace links in the note**: the embeds and links are replaced in place. Text you typed but has not been saved yet is kept, and the change can be undone with Undo. If the note was changed, closed or deleted during the upload, the links are not replaced and the Markdown is copied instead.
+- **Upload and replace links in the note**: the embeds and links are replaced in place. Text you typed but has not been saved yet is kept, and the change can be undone with Undo. If the note was changed, closed, renamed, moved or deleted during the upload, the links are not replaced and the Markdown is copied instead. A note changed by another program at the very moment the plugin writes it is not covered; see **Limits of the protection**.
 - **Upload and copy the Markdown**: the note is not changed. The copied Markdown is based on the note as it was when the upload was prepared.
 
 Generated links:
@@ -169,7 +180,7 @@ Keep S3 Block Public Access enabled and serve the bucket through a CDN such as A
 
 ## Required permissions
 
-Supported storage: S3 general purpose buckets with SSE-S3 or SSE-KMS. Directory buckets are not supported. An S3-compatible endpoint must support conditional writes (`If-None-Match`) and SHA-256 checksums.
+Supported storage: AWS S3 general purpose buckets with SSE-S3 or SSE-KMS. Directory buckets are not supported. S3-compatible storage is not supported in this preview; a service would at least need conditional writes (`If-None-Match`) and SHA-256 checksums.
 
 | Purpose | Permission |
 |---|---|
@@ -216,12 +227,13 @@ Buckets registered as private are recorded so that the plugin never uses them fo
 - Anyone who can edit the plugin's files can remove the records. Enforce access with IAM and bucket policies (for example, never grant the public upload role access to private buckets).
 - Settings are saved through Obsidian, which does not write files atomically. A record saved by this device survives a crash of Obsidian, but not a power loss or an OS crash. Records synchronised from another device but not yet read on this device can be overwritten; they come back from that device at the next synchronisation.
 - If Obsidian's image encoder changes between an interrupted upload and its resume, the image may not be rebuilt exactly. The record is then kept as needing attention for you to keep or discard.
+- Replacing links in a note that is not open: the plugin writes only if the note on disk is exactly what it read before uploading, and reads it again right before writing. A sync client or another program that writes the same note in the same instant can still lose its change or undo the replaced links (the uploaded files stay on the storage). Notes open in Obsidian are changed through the editor and are not affected. A replaced note cannot be restored with Undo unless it was open.
 
 ## What the plugin accesses
 
 - **Files**: the AWS shared config files (`~/.aws/config`, `~/.aws/credentials`) and the IAM Identity Center token cache (`~/.aws/sso/cache`), read through the AWS SDK. Inside the vault: the files that the note you upload from embeds or links to, the note itself (changed only when you choose to replace links), and the plugin's own files listed above. **Archive uploaded originals** reads every text file in the vault (dot folders included, the configuration folder excluded) to look for names, and moves only the files you choose into `_s3-archive`. Nothing else outside the vault.
 - **Clipboard**: written when you copy references, Markdown or the command shown by the connection test.
-- **Network**: AWS endpoints (IAM Identity Center, STS and S3, with the S3 operations in the permissions table above) and, for connections that set one, the custom S3-compatible endpoint you configure. Requests optionally go through the proxy you configure.
+- **Network**: AWS endpoints (IAM Identity Center, STS and S3, with the S3 operations in the permissions table above) and, for connections that set one, the custom endpoint you configure (not supported yet). Requests optionally go through the proxy you configure.
 - **Secrets**: none are written to disk or logged. Temporary credentials for previews are kept in memory per connection and dropped shortly before they expire; the connection test and uploads resolve them on each run without keeping them.
 
 ## Supported authentication (current)
@@ -253,6 +265,8 @@ npm run smoke:upload           # conditional writes and checksums against a real
 npm run check:local-values     # make sure no real environment values are tracked
 ```
 
+`node scripts/third-party-notices.mjs` rewrites `THIRD_PARTY_NOTICES.md` from the packages bundled into `main.js`; run it when dependencies change.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). `main.js` also contains third-party packages under the Apache License 2.0, MIT and BSD-2-Clause licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

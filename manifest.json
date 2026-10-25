@@ -1,9 +1,9 @@
 {
 	"id": "vault-s3-bridge",
 	"name": "Vault S3 Bridge",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"minAppVersion": "1.14.4",
-	"description": "Manage attachments on AWS S3 and S3-compatible storage, with IAM Role authentication and private previews.",
+	"description": "Manage attachments on AWS S3, with IAM Identity Center authentication and private previews.",
 	"author": "akikinyan",
 	"isDesktopOnly": true
 }
