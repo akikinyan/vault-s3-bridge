@@ -241,7 +241,6 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		];
 	}
 
-	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
 	/**
 	 * Design 9-3: the archive folder's state. Read asynchronously into the row itself on every render: update() does
 	 * not redraw the description of a row already shown.
@@ -271,6 +270,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 		};
 	}
 
+	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
 	private async refreshPending(always = true): Promise<void> {
 		const others = (await this.plugin.pending?.others()) ?? [];
 		const changed = JSON.stringify(others) !== JSON.stringify(this.others);
