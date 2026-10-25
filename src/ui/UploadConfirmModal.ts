@@ -1,4 +1,4 @@
-import { type App, type ButtonComponent, Modal, Setting } from 'obsidian';
+import { type App, ButtonComponent, Modal } from 'obsidian';
 import { t, tDynamic } from '../i18n';
 import type { ConfirmChoice } from '../upload/job';
 import { canSend, confirmExampleKey, formatBytes, formatKey, type PlanView, type RowStatus, sizeChange } from '../upload/present';
@@ -29,13 +29,13 @@ export function confirmUpload(app: App, view: PlanView, preview: boolean): Promi
 				const el = this.contentEl;
 				el.addClass('vault-s3-bridge-upload');
 
-				el.createEl('h4', { text: t('upload.confirm.connection') });
+				el.createDiv({ cls: 'vault-s3-bridge-upload-heading', text: t('upload.confirm.connection') });
 				el.createEl('p', { text: `${view.alias} · ${view.classification === 'private' ? t('edit.private') : t('edit.public')} · ${view.target.replace(/^aws:/, 'AWS S3 · ').replace(/^s3c:/, '')}` });
 				if (view.identifying.length > 0) {
 					el.createEl('p', { cls: 'mod-warning', text: `⚠ ${t('upload.confirm.identifying', { vars: view.identifying.map((v) => `{${v}}`).join(' ') })}` });
 				}
 
-				el.createEl('h4', { text: t('upload.confirm.files') });
+				el.createDiv({ cls: 'vault-s3-bridge-upload-heading', text: t('upload.confirm.files') });
 				if (view.rows.length === 0) el.createEl('p', { text: t('upload.confirm.noFiles') });
 				for (const row of view.rows) {
 					const box = el.createDiv({ cls: 'vault-s3-bridge-upload-row' });
@@ -45,7 +45,7 @@ export function confirmUpload(app: App, view: PlanView, preview: boolean): Promi
 					const format = formatKey(row.format);
 					if (format) box.createDiv({ cls: 'setting-item-description', text: `${t(format)} · ${row.contentType}` });
 					box.createDiv({ cls: 'setting-item-description' }).createEl('code', { text: row.key });
-					for (const md of row.markdown) box.createDiv().createEl('code', { text: md });
+					for (const md of row.markdown) box.createDiv({ cls: 'vault-s3-bridge-upload-markdown' }).createEl('code', { text: md });
 					for (const w of row.warnings) box.createDiv({ cls: 'mod-warning', text: `⚠ ${t(w === 'public-copy-remains' ? 'upload.warning.publicCopyRemains' : 'skip.unknown')}` });
 					if (row.needsConfirm) {
 						box.createDiv({ cls: 'mod-warning', text: `⚠ ${t('upload.confirm.publicWarning')}` });
@@ -66,7 +66,7 @@ export function confirmUpload(app: App, view: PlanView, preview: boolean): Promi
 				if (view.sendable) el.createEl('p', { cls: 'setting-item-description', text: t('upload.confirm.total', { size: formatBytes(view.sendBytes) }) });
 
 				if (view.skipped.length > 0) {
-					el.createEl('h4', { text: t('upload.confirm.skipped') });
+					el.createDiv({ cls: 'vault-s3-bridge-upload-heading', text: t('upload.confirm.skipped') });
 					const list = el.createEl('ul');
 					for (const s of view.skipped) {
 						const li = list.createEl('li');
@@ -75,29 +75,26 @@ export function confirmUpload(app: App, view: PlanView, preview: boolean): Promi
 					}
 				}
 
-				const buttons = new Setting(el);
+				// Kept in view at the bottom of the scrolling modal; the buttons wrap instead of running off the edge.
+				const footer = el.createDiv({ cls: 'vault-s3-bridge-upload-footer' });
 				if (preview || !view.sendable) {
-					buttons.addButton((b) => b.setButtonText(t('modal.close')).onClick(() => this.close()));
+					new ButtonComponent(footer.createDiv({ cls: 'modal-button-container' })).setButtonText(t('modal.close')).onClick(() => this.close());
 					return;
 				}
-				buttons.setName(t('upload.confirm.afterwards')).setDesc(t('upload.confirm.copyDesc'));
+				footer.createDiv({ cls: 'setting-item-name', text: t('upload.confirm.afterwards') });
+				footer.createDiv({ cls: 'setting-item-description', text: t('upload.confirm.copyDesc') });
+				const buttons = footer.createDiv({ cls: 'modal-button-container' });
 				// Neither is the default: no call-to-action styling, and nothing is chosen by Enter.
-				buttons
-					.addButton((b) => b.setButtonText(t('modal.cancel')).onClick(() => this.close()))
-					.addButton((b) => {
-						sendButtons.push(b);
-						b.setButtonText(t('upload.confirm.copy')).onClick(() => {
-							choice = { apply: 'copy', confirmed: [...confirmed] };
-							this.close();
-						});
-					})
-					.addButton((b) => {
-						sendButtons.push(b);
-						b.setButtonText(t('upload.confirm.replace')).onClick(() => {
-							choice = { apply: 'replace', confirmed: [...confirmed] };
-							this.close();
-						});
-					});
+				new ButtonComponent(buttons).setButtonText(t('modal.cancel')).onClick(() => this.close());
+				const copy = new ButtonComponent(buttons).setButtonText(t('upload.confirm.copy')).onClick(() => {
+					choice = { apply: 'copy', confirmed: [...confirmed] };
+					this.close();
+				});
+				const replace = new ButtonComponent(buttons).setButtonText(t('upload.confirm.replace')).onClick(() => {
+					choice = { apply: 'replace', confirmed: [...confirmed] };
+					this.close();
+				});
+				sendButtons.push(copy, replace);
 				refresh();
 			}
 
