@@ -281,6 +281,7 @@ export const en = {
 	'upload.result.abortedAuth': 'Stopped because the AWS profile of the connection changed.',
 	'upload.result.fallbackClosed': 'The note was closed, so links were not replaced.',
 	'upload.result.fallbackDeleted': 'The note was deleted, so links were not replaced.',
+	'upload.result.fallbackMoved': 'The note was renamed or moved, so links were not replaced.',
 	'upload.result.fallbackChanged': 'The note changed after preparing, so links were not replaced.',
 	'upload.result.unverified': 'Links were replaced, but the note did not read back as expected. Check the note.',
 	'upload.result.copied': 'The Markdown was copied. It is based on the note as prepared.',

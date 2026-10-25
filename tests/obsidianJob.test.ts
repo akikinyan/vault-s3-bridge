@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownView, TFile } from 'obsidian';
 import type { App } from 'obsidian';
-import { detectSource, resolveLink, saveOpenEditors } from '../src/upload/obsidianJob';
+import { detectSource, noteAccess, resolveLink, saveOpenEditors } from '../src/upload/obsidianJob';
 
 /** A stand-in built on the class's prototype, so instanceof holds; the glue only uses the given members. */
 const stub = <T>(proto: object, members: object): T => Object.assign(Object.create(proto) as object, members) as T;
@@ -115,5 +115,60 @@ describe('detectSource().waitForChange (8-3)', () => {
 		listener?.(file);
 		await waiting;
 		expect(offrefs).toEqual(['ref']);
+	});
+});
+
+describe('noteAccess().identity (Phase 5 Step 1: a renamed note keeps its TFile)', () => {
+	const make = () => stub<TFile>(TFile.prototype, { path: 'notes/a.md', basename: 'a', stat: { size: 1 } });
+	const appOf = (files: Map<string, TFile>) =>
+		({ workspace: { getLeavesOfType: () => [] }, vault: { getFileByPath: (p: string) => files.get(p) ?? null } }) as unknown as App;
+
+	it('the same file at the same path', () => {
+		const f = make();
+		expect(noteAccess(appOf(new Map([['notes/a.md', f]])), f).identity()).toBe('same');
+	});
+
+	it('renamed or moved: the same TFile at another path', () => {
+		const f = make();
+		const files = new Map([['notes/a.md', f]]);
+		const note = noteAccess(appOf(files), f);
+		files.delete('notes/a.md');
+		f.path = 'other/b.md';
+		files.set('other/b.md', f);
+		expect(note.identity()).toBe('moved');
+	});
+
+	it('renamed and back again is the same place (the batch job keeps its own record of renames)', () => {
+		const f = make();
+		const files = new Map([['notes/a.md', f]]);
+		const note = noteAccess(appOf(files), f);
+		f.path = 'notes/x.md';
+		f.path = 'notes/a.md';
+		expect(note.identity()).toBe('same');
+	});
+
+	it('deleted', () => {
+		const f = make();
+		const files = new Map([['notes/a.md', f]]);
+		const note = noteAccess(appOf(files), f);
+		files.delete('notes/a.md');
+		expect(note.identity()).toBe('deleted');
+	});
+
+	it('made again at the same path: another TFile there', () => {
+		const f = make();
+		const files = new Map([['notes/a.md', f]]);
+		const note = noteAccess(appOf(files), f);
+		files.set('notes/a.md', make());
+		expect(note.identity()).toBe('deleted');
+	});
+
+	it('renamed and then deleted', () => {
+		const f = make();
+		const files = new Map([['notes/a.md', f]]);
+		const note = noteAccess(appOf(files), f);
+		files.delete('notes/a.md');
+		f.path = 'other/b.md';
+		expect(note.identity()).toBe('deleted');
 	});
 });

@@ -283,6 +283,7 @@ export const ja: Record<MessageKey, string> = {
 	'upload.result.abortedAuth': '接続の AWS Profile が変わったため中断しました。',
 	'upload.result.fallbackClosed': 'ノートが閉じられたため、リンクを置換しませんでした。',
 	'upload.result.fallbackDeleted': 'ノートが削除されたため、リンクを置換しませんでした。',
+	'upload.result.fallbackMoved': 'ノートの名前か場所が変わったため、リンクを置換しませんでした。',
 	'upload.result.fallbackChanged': '準備の後にノートが変更されたため、リンクを置換しませんでした。',
 	'upload.result.unverified': 'リンクを置換しましたが、ノートの内容が想定と一致しません。ノートを確認してください。',
 	'upload.result.copied': 'Markdown をコピーしました。準備した時点のノートの内容に基づきます。',
