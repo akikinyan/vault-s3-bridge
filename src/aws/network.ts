@@ -50,6 +50,7 @@ export interface RequestHandlerOptions {
 	proxyUrl?: string;
 	noProxy?: string;
 	connectionTimeoutMs: number;
+	/** Until the response starts, sending the body included. */
 	requestTimeoutMs: number;
 }
 

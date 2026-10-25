@@ -8,6 +8,8 @@ export default defineConfig(
 		'dist',
 		'local',
 		'dev-vault',
+		// Byte fixtures for the format classifier: data, not code.
+		'tests/fixtures/files',
 		'esbuild.config.mjs',
 		'version-bump.mjs',
 		'versions.json',

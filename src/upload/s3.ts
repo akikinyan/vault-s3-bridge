@@ -1,11 +1,9 @@
 // S3 requests of the upload and the classification of their outcomes (design 6-1, 6-2).
 // The upload-specific statuses (412, 409, digest errors) are decided here, before the general classifyError.
+import { Readable } from 'node:stream';
 import { HeadObjectCommand, type HeadObjectCommandOutput, PutObjectCommand, S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { classifyError } from '../aws/errors';
 import { isSha256Hex } from '../settings/history';
-import type { UploadFormat } from '../settings/types';
-
-const CONTENT_TYPE: Record<UploadFormat, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
 
 /**
  * The client for uploads: one attempt per request (the uploader decides every retry, 6-4) and static credentials
@@ -15,8 +13,46 @@ export function uploadClient(config: Pick<S3ClientConfig, 'region' | 'endpoint' 
 	return new S3Client({ ...config, maxAttempts: 1 });
 }
 
-/** A Put may take longer than an ordinary request: at least this long (6-1). */
-export const PUT_MIN_TIMEOUT_MS = 60_000;
+/**
+ * Design 2-3 (rev.5): a Put has no limit on its total time; a long one is stopped by the user. The handler's
+ * requestTimeout runs until the response starts, so it would cut a large upload that is still sending; 0 turns it
+ * off for the Put. A Put whose body stops moving is ended by putWatch instead.
+ */
+export const PUT_REQUEST_TIMEOUT_MS = 0;
+
+/**
+ * Watches a Put's body being taken by the network (Step 4). Neither timer of the HTTP handler can: requestTimeout
+ * counts the whole upload, and the socket looks idle while one large write is pending or while the last bytes wait
+ * in the system's send buffer. The signal aborts when no piece is taken for `idleMs`; once the whole body has been
+ * taken, the response is awaited without a limit.
+ */
+export interface PutWatch {
+	readonly signal: AbortSignal;
+	/** A piece of the body was taken. */
+	piece(): void;
+	/** The whole body was taken. */
+	sent(): void;
+	dispose(): void;
+}
+
+/** Timers the caller provides: the window's in Obsidian, Node's in the scripts and tests. */
+export interface PutTimers {
+	set(run: () => void, ms: number): unknown;
+	clear(timer: unknown): void;
+}
+
+/** Without timers there is no watch: the Put ends only by its response or the job's own abort. */
+export function putWatch(idleMs: number, timers: PutTimers | undefined): PutWatch {
+	const abort = new AbortController();
+	let timer: unknown;
+	const stop = () => timers?.clear(timer);
+	const arm = () => {
+		stop();
+		if (timers) timer = timers.set(() => abort.abort(), idleMs);
+	};
+	arm();
+	return { signal: abort.signal, piece: arm, sent: stop, dispose: stop };
+}
 
 /** S3 expects the SHA-256 checksum as base64 of the raw digest. */
 export function checksumOf(sha256Hex: string): string {
@@ -29,13 +65,33 @@ export function headCommand(bucket: string, key: string): HeadObjectCommand {
 	return new HeadObjectCommand({ Bucket: bucket, Key: key, ChecksumMode: 'ENABLED' });
 }
 
-/** Conditional Put that never overwrites, with the checksum the job computed (the SDK sends it as given). */
-export function putCommand(bucket: string, key: string, body: Uint8Array, sentSha256: string, format: UploadFormat): PutObjectCommand {
+/** The size of each write of a Put's body. */
+export const PUT_PIECE_BYTES = 64 * 1024;
+
+/** A Put's body as a stream of small pieces, each reported to `watch` when the network takes it. */
+function pieces(body: Uint8Array, watch?: Pick<PutWatch, 'piece' | 'sent'>): Readable {
+	return Readable.from(
+		(function* () {
+			for (let at = 0; at < body.byteLength; at += PUT_PIECE_BYTES) {
+				watch?.piece();
+				yield body.subarray(at, Math.min(body.byteLength, at + PUT_PIECE_BYTES));
+			}
+			watch?.sent();
+		})(),
+		{ objectMode: false },
+	);
+}
+
+/**
+ * Conditional Put that never overwrites, with the checksum the job computed (the SDK sends it as given).
+ * `contentType` is one of the fixed strings of fileType.ts (I14 (d)); no Content-Disposition is ever set.
+ */
+export function putCommand(bucket: string, key: string, body: Uint8Array, sentSha256: string, contentType: string, watch?: Pick<PutWatch, 'piece' | 'sent'>): PutObjectCommand {
 	return new PutObjectCommand({
 		Bucket: bucket,
 		Key: key,
-		Body: body,
-		ContentType: CONTENT_TYPE[format],
+		Body: pieces(body, watch),
+		ContentType: contentType,
 		ContentLength: body.byteLength,
 		ChecksumAlgorithm: 'SHA256',
 		ChecksumSHA256: checksumOf(sentSha256),
@@ -43,12 +99,28 @@ export function putCommand(bucket: string, key: string, body: Uint8Array, sentSh
 	});
 }
 
-export type HeadContent = 'match' | 'mismatch';
+/** delivery-mismatch: the bytes match but the object is served in another form (I14 (e)); handled as a mismatch. */
+export type HeadContent = 'match' | 'mismatch' | 'delivery-mismatch';
 
-/** The object holds exactly the bytes we would send: same full-object SHA-256. Anything else is a mismatch. */
-export function compareHead(output: Pick<HeadObjectCommandOutput, 'ChecksumSHA256' | 'ChecksumType'>, sentSha256: string): HeadContent {
+/** What a public object must also be served as: our fixed Content-Type, exactly, and no Content-Disposition. */
+export interface DeliveryExpectation {
+	contentType: string;
+}
+
+/**
+ * The object holds exactly the bytes we would send: same full-object SHA-256. Anything else is a mismatch.
+ * With `expect` (public items, design 3-4), the Content-Type must be the same string and there must be no
+ * Content-Disposition; S3 does not normalise either, so another tool's spelling is not ours.
+ */
+export function compareHead(
+	output: Pick<HeadObjectCommandOutput, 'ChecksumSHA256' | 'ChecksumType' | 'ContentType' | 'ContentDisposition'>,
+	sentSha256: string,
+	expect?: DeliveryExpectation,
+): HeadContent {
 	if (output.ChecksumType !== undefined && output.ChecksumType !== 'FULL_OBJECT') return 'mismatch';
-	return output.ChecksumSHA256 === checksumOf(sentSha256) ? 'match' : 'mismatch';
+	if (output.ChecksumSHA256 !== checksumOf(sentSha256)) return 'mismatch';
+	if (expect && (output.ContentType !== expect.contentType || output.ContentDisposition !== undefined)) return 'delivery-mismatch';
+	return 'match';
 }
 
 export type HeadOutcome = 'aborted' | 'head-forbidden' | 'absent' | 'indeterminate' | 'failed';

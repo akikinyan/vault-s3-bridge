@@ -2,6 +2,7 @@
 // Validation never repairs a key; it reports why the key is unusable.
 import { isSha256Hex } from '../settings/history';
 import type { UploadFormat } from '../settings/types';
+import { extensionOf, type ImageFormat, isImageFormat } from './fileType';
 
 export const KEY_VARIABLES = ['year', 'mon', 'day', 'filename', 'ext', 'notename', 'foldername', 'hash'] as const;
 export type KeyVariable = (typeof KEY_VARIABLES)[number];
@@ -19,11 +20,11 @@ export type BuildKeyResult = KeyResult | { ok: false; reason: 'unknown-variable'
 export interface KeyInput {
 	/** When the upload is prepared; the device's local date is used. */
 	date: Date;
-	/** Vault path of the source image, e.g. `assets/画像 (1).png`. */
+	/** Vault path of the source file, e.g. `assets/画像 (1).png`. */
 	sourcePath: string;
 	/** Vault path of the note, e.g. `日報/2026-10-16.md`. */
 	notePath: string;
-	/** Format of the bytes that will be sent. */
+	/** Format of the bytes that will be sent. `{ext}` comes from it for images, from the source name otherwise (3-2). */
 	format: UploadFormat;
 	/** SHA-256 (lowercase hex) of the bytes that will be sent. */
 	sentSha256: string;
@@ -33,7 +34,12 @@ const MAX_KEY_BYTES = 1024;
 const TOKEN = /\{([^{}]*)\}/g;
 // eslint-disable-next-line no-control-regex -- control characters are exactly what this matches
 const CONTROL = /[\u0000-\u001f\u007f]/g;
-const EXT: Record<UploadFormat, string> = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif' };
+const IMAGE_EXT: Record<ImageFormat, string> = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif' };
+
+/** Design 3-2: an image's extension follows what is sent (it may be converted); other files keep theirs, or `bin`. */
+function keyExt(format: UploadFormat, sourcePath: string): string {
+	return isImageFormat(format) ? IMAGE_EXT[format] : extensionOf(sourcePath) || 'bin';
+}
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -60,7 +66,7 @@ export function keyValues(input: KeyInput): Record<KeyVariable, string> {
 		mon: pad2(input.date.getMonth() + 1),
 		day: pad2(input.date.getDate()),
 		filename: stripExtension(lastSegment(input.sourcePath)),
-		ext: EXT[input.format],
+		ext: keyExt(input.format, input.sourcePath),
 		notename: stripExtension(lastSegment(input.notePath)),
 		foldername: lastSegment(folder), // '' at the vault root, tidied to '_'
 		hash: input.sentSha256.slice(0, 16),

@@ -13,6 +13,7 @@ import { saveConnectionOp } from '../src/settings/ops';
 import { SettingsStore, type StoreIO } from '../src/settings/store';
 import { DEFAULT_REQUEST_TIMEOUT_MS, type StorageConnection } from '../src/settings/types';
 import { jobClients } from '../src/upload/clients';
+import { classifyFile, imageContentType, TEXT_CONTENT_TYPE } from '../src/upload/fileType';
 import { alternateKey } from '../src/upload/key';
 import { type NewPendingItem, nodePendingIO, PendingStore } from '../src/upload/pending';
 import { classifyS3Outcome, compareHead, headCommand, putCommand } from '../src/upload/s3';
@@ -84,7 +85,7 @@ try {
 	const sent = sha256(body);
 	const keyA = `${prefix}direct.png`;
 	created.add(keyA);
-	const putA = await errorOf(client.send(putCommand(bucket, keyA, body, sent, 'png'), { abortSignal: signal }));
+	const putA = await errorOf(client.send(putCommand(bucket, keyA, body, sent, imageContentType('png')), { abortSignal: signal }));
 	report(putA === undefined, 'a  conditional Put to a new key', putA ? classifyS3Outcome('put', putA, false).code : '');
 	const h = await head(keyA);
 	report(compareHead(h, sent) === 'match', 'b  Head returns the same full-object SHA-256', `type=${h.ChecksumType}`);
@@ -92,7 +93,7 @@ try {
 	report(h.ChecksumCRC32 === undefined && h.ChecksumCRC64NVME === undefined, 'b  no checksum added by the SDK');
 	// Different content with its own checksum: S3 checks the checksum before If-None-Match.
 	const other = imageBytes();
-	const again = await errorOf(client.send(putCommand(bucket, keyA, other, sha256(other), 'png'), { abortSignal: signal }));
+	const again = await errorOf(client.send(putCommand(bucket, keyA, other, sha256(other), imageContentType('png')), { abortSignal: signal }));
 	const againOutcome = again ? classifyS3Outcome('put', again, false).outcome : 'succeeded';
 	const h2 = await head(keyA);
 	report(againOutcome === 'precondition' && h2.ETag === h.ETag, 'c  second Put to the same key is refused', againOutcome);
@@ -100,7 +101,7 @@ try {
 	// d: a wrong checksum is rejected by S3 and nothing is stored.
 	const keyD = `${prefix}bad-digest.png`;
 	created.add(keyD);
-	const bad = await errorOf(client.send(putCommand(bucket, keyD, imageBytes(), sent, 'png'), { abortSignal: signal }));
+	const bad = await errorOf(client.send(putCommand(bucket, keyD, imageBytes(), sent, imageContentType('png')), { abortSignal: signal }));
 	const badOutcome = bad ? classifyS3Outcome('put', bad, false).outcome : 'succeeded';
 	const afterBad = await errorOf(head(keyD));
 	const afterBadOutcome = afterBad ? classifyS3Outcome('head', afterBad, false).outcome : 'exists';
@@ -111,6 +112,33 @@ try {
 	const missing = await errorOf(head(`${prefix}never-written.png`));
 	const missingOutcome = missing ? classifyS3Outcome('head', missing, false).outcome : 'exists';
 	report(missingOutcome === 'absent' || missingOutcome === 'head-forbidden', 'e  Head of a missing key', missingOutcome === 'head-forbidden' ? 'head-forbidden (no s3:ListBucket)' : missingOutcome);
+
+	// i-k: files that are not images, with the Content-Type the plugin chooses for them.
+	const pdf = new Uint8Array(Buffer.concat([Buffer.from('%PDF-1.4\n%smoke\n'), randomBytes(1024)]));
+	const pdfType = classifyFile(pdf, 'pdf').contentType;
+	const keyI = `${prefix}document.pdf`;
+	created.add(keyI);
+	const putI = await errorOf(client.send(putCommand(bucket, keyI, pdf, sha256(pdf), pdfType), { abortSignal: signal }));
+	report(putI === undefined, 'i  conditional Put of a PDF', putI ? classifyS3Outcome('put', putI, false).code : pdfType);
+	const hI = await head(keyI);
+	report(compareHead(hI, sha256(pdf), { contentType: pdfType }) === 'match' && hI.ContentLength === pdf.byteLength, 'i  Head: same SHA-256, Content-Type and length', hI.ContentType ?? '');
+
+	const text = new TextEncoder().encode(`smoke ${randomBytes(16).toString('hex')}\n日本語\n`);
+	const textType = classifyFile(text, 'txt').contentType;
+	const keyJ = `${prefix}notes.txt`;
+	created.add(keyJ);
+	const putJ = await errorOf(client.send(putCommand(bucket, keyJ, text, sha256(text), textType), { abortSignal: signal }));
+	report(putJ === undefined && textType === TEXT_CONTENT_TYPE, 'j  conditional Put of a text file', putJ ? classifyS3Outcome('put', putJ, false).code : textType);
+	const hJ = await head(keyJ);
+	report(compareHead(hJ, sha256(text), { contentType: TEXT_CONTENT_TYPE }) === 'match', 'j  Head returns the Content-Type exactly as sent', hJ.ContentType ?? '');
+
+	// The same bytes under another spelling of the type, as another tool might have written them.
+	const keyK = `${prefix}notes-other-type.txt`;
+	created.add(keyK);
+	await client.send(putCommand(bucket, keyK, text, sha256(text), 'text/plain'), { abortSignal: signal });
+	const hK = await head(keyK);
+	report(compareHead(hK, sha256(text), { contentType: TEXT_CONTENT_TYPE }) === 'delivery-mismatch', 'k  a different Content-Type is not reused (public)', hK.ContentType ?? '');
+	report(compareHead(hK, sha256(text)) === 'match', 'k  the same bytes still match without it (private)');
 
 	// f-h: the uploader itself, with the records and settings above.
 	let ids = 0;
@@ -125,6 +153,7 @@ try {
 		sourceChanged: () => false,
 		rebuild: () => Promise.resolve(bytes),
 		sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+		timers: { set: (run, ms) => setTimeout(run, ms), clear: (t) => clearTimeout(t as NodeJS.Timeout) },
 		random: Math.random,
 		now: () => new Date(),
 		newId: () => `smoke-${++ids}`,
@@ -142,11 +171,12 @@ try {
 		sentSha256: sha256(bytes),
 		size: bytes.byteLength,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		key,
 		preparedKey: key,
 		phase: 'prepared',
-		occurrences: [{ original: `![[${id}.png]]`, alt: id, inTable: false }],
+		occurrences: [{ original: `![[${id}.png]]`, kind: 'embed', alt: id, inTable: false }],
 		apply: 'replace',
 		...over,
 	});
@@ -174,7 +204,14 @@ try {
 	if (hItem?.key) created.add(hItem.key);
 	const hH = hItem?.key ? await head(hItem.key) : undefined;
 	report(hItem?.outcome === 'delivered' && hItem.key !== keyF && hH !== undefined && compareHead(hH, sha256(bodyH)) === 'match', 'h  different bytes at a used key go to an alternate key', hItem?.key?.slice(prefix.length) ?? hItem?.outcome ?? '');
-	report(pending.items.every((i) => i.state === 'delivered'), 'f-h  records left for the note to be updated', `${pending.items.length} delivered`);
+
+	// l: the uploader with a file that is not an image.
+	const keyL = `${prefix}uploader.pdf`;
+	created.add(keyL);
+	const [l] = await sendGroup([item('l', pdf, keyL, { sourcePath: 'l.pdf', format: 'pdf', contentType: pdfType, converter: 'c1;orig', occurrences: [{ original: '![[l.pdf]]', kind: 'embed', alt: 'l', inTable: false }] })], pdf, deps(pdf));
+	const hL = l?.key ? await head(l.key) : undefined;
+	report(l?.outcome === 'delivered' && l.key === keyL && hL?.ContentType === pdfType && compareHead(hL, sha256(pdf)) === 'match', 'l  uploader sends a PDF with its Content-Type', l?.outcome ?? '');
+	report(pending.items.every((i) => i.state === 'delivered'), 'f-l  records left for the note to be updated', `${pending.items.length} delivered`);
 } catch (error) {
 	report(false, 'unexpected error', errorDetail(error));
 } finally {

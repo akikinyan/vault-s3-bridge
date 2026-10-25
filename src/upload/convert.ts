@@ -43,13 +43,13 @@ export type PrepareRejection =
 	| 'strip-failed';
 
 export type PreparedBytes =
-	| { ok: true; bytes: Uint8Array; format: UploadFormat; converter: string; sentSha256: string; sourceFormat: ImageFormat; reencoded: boolean }
+	| { ok: true; bytes: Uint8Array; format: ImageFormat; converter: string; sentSha256: string; sourceFormat: ImageFormat; reencoded: boolean }
 	| { ok: false; reason: PrepareRejection; detail?: string };
 
 export const sha256Hex = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 
 interface Method {
-	format: Exclude<UploadFormat, 'gif'>;
+	format: Exclude<ImageFormat, 'gif'>;
 	mime: OutputMime;
 	quality?: number;
 	name: string;

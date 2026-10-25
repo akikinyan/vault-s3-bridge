@@ -66,7 +66,7 @@ describe('loadSettings — sync and compatibility', () => {
 
 	it('keeps unknown fields and becomes read-only for newer schemas', () => {
 		const device = emptyDeviceState();
-		const newer = { ...v1, schemaVersion: 4, futureFeature: { a: 1 } };
+		const newer = { ...v1, schemaVersion: 5, futureFeature: { a: 1 } };
 		const { settings, readOnly, changed } = loadSettings(newer, device);
 		expect(readOnly).toBe(true);
 		expect(changed).toBe(false);

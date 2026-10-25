@@ -43,7 +43,7 @@ export function conflictWaitMs(retry: number, random: () => number): number {
 	return Math.round(base * (0.8 + 0.4 * random()));
 }
 
-const HEAD: Record<HeadStage, Record<HeadResult, Next>> = {
+const HEAD: Record<HeadStage, Record<Exclude<HeadResult, 'delivery-mismatch'>, Next>> = {
 	candidate: {
 		match: { do: 'reuse' },
 		mismatch: { do: 'drop-candidate' },
@@ -91,8 +91,14 @@ const HEAD: Record<HeadStage, Record<HeadResult, Next>> = {
 	},
 };
 
+/**
+ * A delivery mismatch (same bytes, another Content-Type or a Content-Disposition, design 3-4) takes the same step as
+ * a content mismatch at every stage: the object is not reused. Only the recorded reason differs.
+ */
 export function afterHead(stage: HeadStage, result: HeadResult): Next {
-	return HEAD[stage][result];
+	if (result !== 'delivery-mismatch') return HEAD[stage][result];
+	const next = HEAD[stage].mismatch;
+	return next.do === 'unresolved' ? { do: 'unresolved', reason: 'different-delivery' } : next;
 }
 
 /**

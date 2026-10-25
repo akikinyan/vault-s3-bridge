@@ -1,13 +1,15 @@
 // What the upload job needs from Obsidian (design 8-1, 8-4, 9-2, 10-2, 4-3) and from AWS, built for one note.
 // Kept apart from job.ts so the job itself runs without Obsidian.
-import { type App, type EventRef, MarkdownView, type TFile } from 'obsidian';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { type App, type EventRef, FileSystemAdapter, MarkdownView, type TFile } from 'obsidian';
 import { profileOf } from '../settings/device';
 import type { SettingsStore } from '../settings/store';
 import type { StorageConnection } from '../settings/types';
 import type { DeepReadonly } from '../util/deepReadonly';
 import type { DecodedImage, Encoder } from './convert';
 import { type CacheView, type DetectSource, type Detection, detectEmbeds } from './detect';
-import { type CommandDeps, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
+import { type CommandDeps, type ConfirmChoice, type JobLock, type JobPlan, type ResumeCommandDeps, resumeJob, type ResumeTarget, runJob, type SourceFile } from './job';
 import type { PendingStore } from './pending';
 import { jobClients } from './clients';
 import type { EditorLike, NoteAccess } from './rewrite';
@@ -51,6 +53,7 @@ export function detectSource(app: App, file: TFile): DetectSource {
 				(c.sections ?? []).filter((s) => s.type === type).map((s) => ({ startLine: s.position.start.line, endLine: s.position.end.line }));
 			return {
 				embeds: (c.embeds ?? []).map((e) => ({ offset: e.position.start.offset, original: e.original })),
+				links: (c.links ?? []).map((e) => ({ offset: e.position.start.offset, original: e.original })),
 				tables: ranges('table'),
 				comments: ranges('comment'),
 			};
@@ -161,7 +164,7 @@ export interface UploadHost {
 
 export interface UploadUi {
 	pickConnection(): Promise<DeepReadonly<StorageConnection> | undefined>;
-	confirm(plan: JobPlan, preview: boolean): Promise<'replace' | 'copy' | undefined>;
+	confirm(plan: JobPlan, preview: boolean): Promise<ConfirmChoice | undefined>;
 	/** The stop button of the progress notice (10-4). */
 	stop: AbortSignal;
 }
@@ -189,6 +192,7 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 		prepare: {
 			resolveLink: (linkpath) => resolveLink(app, file.path, linkpath),
 			encoder: canvasEncoder,
+			attachments: true,
 			now: () => new Date(),
 			newId: () => crypto.randomUUID(),
 		},
@@ -209,9 +213,12 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 					authGeneration,
 					sourceChanged: (path) => watch.changed(path),
 					readSource: (path) => readVaultFile(app, path),
+					hashSource: (path) => hashVaultFile(app, path),
+					sourceSize: (path) => app.vault.getFileByPath(path)?.stat.size,
 					note,
 					copy: copyToClipboard,
 					sleep: abortableSleep,
+					timers: windowTimers,
 					random: () => Math.random(),
 					now: () => new Date(),
 					newId: () => crypto.randomUUID(),
@@ -223,6 +230,11 @@ export function uploadCommandDeps(host: UploadHost, file: TFile, ui: UploadUi): 
 	};
 	return { deps, dispose: () => watch.dispose() };
 }
+
+const windowTimers = {
+	set: (run: () => void, ms: number) => window.setTimeout(run, ms),
+	clear: (timer: unknown) => window.clearTimeout(timer as number),
+};
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
@@ -244,8 +256,22 @@ async function readVaultFile(app: App, path: string): Promise<Uint8Array | undef
 	return f ? new Uint8Array(await app.vault.readBinary(f)) : undefined;
 }
 
+/** Design 3-3: SHA-256 of a vault file from a stream, so a large file is never held whole. */
+function hashVaultFile(app: App, path: string): Promise<string | undefined> {
+	const adapter = app.vault.adapter;
+	// Without a file system path the hash cannot be streamed: treated as changed, so nothing is sent.
+	if (!(adapter instanceof FileSystemAdapter) || !app.vault.getFileByPath(path)) return Promise.resolve(undefined);
+	return new Promise((resolve) => {
+		const hash = createHash('sha256');
+		createReadStream(adapter.getFullPath(path))
+			.on('data', (chunk) => hash.update(chunk))
+			.on('error', () => resolve(undefined))
+			.on('end', () => resolve(hash.digest('hex')));
+	});
+}
+
 export interface ResumeUi {
-	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<boolean>;
+	confirm(targets: readonly ResumeTarget[], mismatched: number): Promise<readonly string[] | undefined>;
 	stop: AbortSignal;
 }
 
@@ -272,8 +298,11 @@ export function resumeCommandDeps(host: UploadHost, pending: PendingStore, ui: R
 					authGeneration,
 					sourceChanged: (path) => watch.changed(path),
 					readSource: (path) => readVaultFile(app, path),
+					hashSource: (path) => hashVaultFile(app, path),
+					sourceSize: (path) => app.vault.getFileByPath(path)?.stat.size,
 					encoder: canvasEncoder,
 					sleep: abortableSleep,
+					timers: windowTimers,
 					random: () => Math.random(),
 					now: () => new Date(),
 					newId: () => crypto.randomUUID(),

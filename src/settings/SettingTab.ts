@@ -1,4 +1,4 @@
-import { type App, Notice, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
+import { type App, Notice, PluginSettingTab, type SettingDefinition, type SettingDefinitionItem } from 'obsidian';
 import { listSsoProfileNames, loadSharedConfig } from '../aws/profiles';
 import { t, type MessageKey } from '../i18n';
 import { confirm } from '../ui/ConfirmModal';
@@ -7,12 +7,13 @@ import type VaultS3BridgePlugin from '../main';
 import { resumableGroups } from '../upload/job';
 import type { OtherDeviceFile } from '../upload/pending';
 import { STATE_KEY } from '../upload/present';
+import { archiveStatus, openRestore } from '../ui/archiveFlow';
 import { copyRecords, discardOtherRecords, discardRecord, resetDamagedRecords, resumeRecords, takeOverRecords } from '../ui/pendingFlow';
 import { connectionState, resolveAlias } from './registry';
 import { connectionWarnings, validateProxyUrl } from './validate';
 import type { StorageConnection } from './types';
 
-import { type FieldKey, UPLOAD_BOUNDS } from './ops';
+import { type FieldKey, PREVIEW_BOUNDS, UPLOAD_BOUNDS } from './ops';
 
 type ControlKey = FieldKey;
 
@@ -110,6 +111,11 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 					},
 					{ name: t('settings.stripPrivate'), desc: t('settings.stripPrivateDesc'), control: { type: 'toggle', key: 'stripPrivate' } },
 					{ name: t('settings.uploadMaxFileMB'), control: { type: 'number', key: 'uploadMaxFileMB', ...UPLOAD_BOUNDS.uploadMaxFileMB, step: 1 } },
+					{
+						name: t('settings.uploadMaxOtherFileMB'),
+						desc: t('settings.uploadMaxOtherFileDesc'),
+						control: { type: 'number', key: 'uploadMaxOtherFileMB', ...UPLOAD_BOUNDS.uploadMaxOtherFileMB, step: 1 },
+					},
 					{ name: t('settings.uploadMaxJobMB'), desc: t('settings.uploadMaxJobDesc'), control: { type: 'number', key: 'uploadMaxJobMB', ...UPLOAD_BOUNDS.uploadMaxJobMB, step: 10 } },
 					{ name: t('settings.excludeFolders'), desc: t('settings.excludeFoldersDesc'), control: { type: 'textarea', key: 'excludeFolders', rows: 3 } },
 					{ name: t('settings.historyLimit'), desc: t('settings.historyLimitDesc'), control: { type: 'number', key: 'historyLimit', ...UPLOAD_BOUNDS.historyLimit, step: 100 } },
@@ -121,10 +127,13 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				heading: t('settings.preview'),
 				items: [
 					{ name: t('settings.maxFileMB'), control: { type: 'number', key: 'maxFileMB', min: 1, max: 200, step: 1 } },
+					{ name: t('settings.maxPdfMB'), control: { type: 'number', key: 'maxPdfMB', ...PREVIEW_BOUNDS.maxPdfMB, step: 1 } },
+					{ name: t('settings.maxTextMB'), control: { type: 'number', key: 'maxTextMB', ...PREVIEW_BOUNDS.maxTextMB, step: 1 } },
 					{ name: t('settings.maxMegapixels'), control: { type: 'number', key: 'maxMegapixels', min: 1, max: 500, step: 1 } },
 					{ name: t('settings.cacheMB'), desc: t('settings.cacheDesc'), control: { type: 'number', key: 'cacheMB', min: 0, max: 2000, step: 10 } },
 				],
 			},
+			this.archiveDefinition(),
 			{
 				type: 'group',
 				heading: t('settings.network'),
@@ -198,6 +207,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 						visible: pending.status === 'damaged',
 						action: () => run(() => resetDamagedRecords(host, pending)),
 					},
+					// Written by a newer version: kept as is, with no reset (design 1-2).
+					{ name: t('settings.pendingFuture'), desc: t('settings.pendingFutureDesc'), visible: pending.status === 'future' },
 					{
 						name: t('settings.pendingResume'),
 						desc: t('settings.pendingResumeDesc'),
@@ -211,7 +222,9 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 						visible: ready,
 						action: () => run(() => copyRecords(host, pending, notePath)),
 					})),
-					...this.others.flatMap((o) => {
+					...this.others.flatMap((o): SettingDefinition<ControlKey>[] => {
+						// A file of a newer version is kept as is: it can be neither taken over nor discarded here (1-2).
+						if ('future' in o) return [{ name: t('settings.pendingOtherFuture'), desc: t('settings.pendingFutureDesc') }];
 						const name = 'damaged' in o ? t('settings.pendingOtherDamaged') : t('settings.pendingOther', { n: String(o.count) });
 						return [
 							{
@@ -229,6 +242,35 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	}
 
 	/** Reads the other devices' files again and re-renders (always after an operation; on display only if they changed). */
+	/**
+	 * Design 9-3: the archive folder's state. Read asynchronously into the row itself on every render: update() does
+	 * not redraw the description of a row already shown.
+	 */
+	private archiveDefinition(): SettingDefinitionItem<ControlKey> {
+		return {
+			type: 'group',
+			heading: t('settings.archive'),
+			items: [
+				{
+					name: t('settings.archiveOpen'),
+					render: (setting) => {
+						let shown = true;
+						const refresh = () =>
+							void archiveStatus(this.app).then((desc) => {
+								if (shown) setting.setDesc(desc);
+							});
+						setting.setName(t('settings.archiveOpen'));
+						refresh();
+						setting.addButton((b) => b.setButtonText(t('settings.archiveList')).onClick(() => void openRestore(this.plugin.uploadHost, refresh)));
+						return () => {
+							shown = false;
+						};
+					},
+				},
+			],
+		};
+	}
+
 	private async refreshPending(always = true): Promise<void> {
 		const others = (await this.plugin.pending?.others()) ?? [];
 		const changed = JSON.stringify(others) !== JSON.stringify(this.others);
@@ -259,6 +301,10 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				return s.language;
 			case 'maxFileMB':
 				return s.preview.maxFileMB;
+			case 'maxPdfMB':
+				return s.preview.maxPdfMB;
+			case 'maxTextMB':
+				return s.preview.maxTextMB;
 			case 'maxMegapixels':
 				return s.preview.maxMegapixels;
 			case 'cacheMB':
@@ -273,6 +319,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				return s.upload.stripPrivate;
 			case 'uploadMaxFileMB':
 				return s.upload.maxFileMB;
+			case 'uploadMaxOtherFileMB':
+				return s.upload.maxOtherFileMB;
 			case 'uploadMaxJobMB':
 				return s.upload.maxJobMB;
 			case 'excludeFolders':
@@ -329,6 +377,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 				this.update();
 				return;
 			case 'maxFileMB':
+			case 'maxPdfMB':
+			case 'maxTextMB':
 			case 'maxMegapixels':
 			case 'cacheMB':
 				// Limits apply to the next download; only the cache budget needs enforcing now.

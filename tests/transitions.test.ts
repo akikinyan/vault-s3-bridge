@@ -111,3 +111,12 @@ describe('resumePlan (6-5)', () => {
 		expect(resumePlan({ phase: 'alt', putSent: true })).toEqual({ mode: 'recover' });
 	});
 });
+
+describe('afterHead: a delivery mismatch takes the content mismatch step (design 3-4)', () => {
+	it.each(['candidate', 'fresh', 'verify'] as const)('%s', (stage) => {
+		expect(afterHead(stage, 'delivery-mismatch')).toEqual(afterHead(stage, 'mismatch'));
+	});
+	it.each(['recover-check', 'recover-verify'] as const)('%s: unresolved, never another key', (stage) => {
+		expect(afterHead(stage, 'delivery-mismatch')).toEqual({ do: 'unresolved', reason: 'different-delivery' });
+	});
+});

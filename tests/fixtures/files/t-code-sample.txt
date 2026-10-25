@@ -1,0 +1,3 @@
+Example:
+<script>alert(1)</script>
+function f(){ return document.cookie }

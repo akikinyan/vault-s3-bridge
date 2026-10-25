@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryEntry } from '../src/settings/types';
 import type { FileResult, JobPlan, JobResult, PlannedGroup } from '../src/upload/job';
-import { copyLines, formatBytes, sizeChange, pendingLine, planView, resultLines, resumeLines, STATE_KEY, stopLine } from '../src/upload/present';
+import { canSend, confirmExampleKey, copyLines, formatBytes, formatKey, sizeChange, pendingLine, planView, resultLines, resumeLines, STATE_KEY, stopLine } from '../src/upload/present';
 import { newItem } from './fixtures/pendingItems';
 
 const A = 'a'.repeat(64);
@@ -17,6 +17,7 @@ function group(over: Partial<PlannedGroup> & { files: PlannedGroup['files'] }): 
 		phase: 'prepared',
 		sentSha256: S,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		reencoded: false,
 		...over,
@@ -29,9 +30,17 @@ const file = (path: string, sha: string, md = [`![a](s3://work/k/a.png)`]) => ({
 	itemId: path,
 	sourcePath: path,
 	basename: 'a',
+	fileName: 'a.png',
 	sourceSha256: sha,
 	sourceSize: 1000,
-	occurrences: md.map((m, i) => ({ offset: i, original: '![[a.png]]', inTable: false, syntax: { kind: 'wiki' as const, path: 'a.png' }, markdown: m })),
+	occurrences: md.map((m, i) => ({
+		offset: i,
+		original: '![[a.png]]',
+		inTable: false,
+		source: { kind: 'embed' as const, syntax: { kind: 'wiki' as const, path: 'a.png' } },
+		parts: { shape: 'embed' as const, alt: 'a', inTable: false },
+		markdown: m,
+	})),
 });
 
 function plan(over: Partial<JobPlan> = {}, classification: 'public' | 'private' = 'private', keyTemplate = 'k/{filename}.{ext}'): JobPlan {
@@ -249,3 +258,33 @@ describe('records (7-4)', () => {
 it('sizeChange', () => {
 	expect([sizeChange(1000, 700), sizeChange(1000, 1120), sizeChange(1000, 1000), sizeChange(1000, 1004), sizeChange(0, 0), sizeChange(0, 5)]).toEqual(['−30%', '+12%', '±0%', '±0%', '±0%', '+∞']);
 });
+
+describe('confirmation rows (design 4-1, 9-2)', () => {
+	const pdfGroup = (over: Partial<PlannedGroup> = {}) => group({ format: 'pdf', contentType: 'application/pdf', files: [file('img/d.pdf', A)], ...over });
+
+	it('public PDF rows need confirming; private ones and images do not', () => {
+		expect(planView(plan({ groups: [pdfGroup()] }, 'public'), { history: [] }).rows.map((r) => [r.needsConfirm, r.format, r.contentType])).toEqual([[true, 'pdf', 'application/pdf']]);
+		expect(planView(plan({ groups: [pdfGroup()] }, 'private'), { history: [] }).rows[0]!.needsConfirm).toBe(false);
+		expect(planView(plan({ groups: [group({ files: [file('img/a.png', A)] })] }, 'public'), { history: [] }).rows[0]!.needsConfirm).toBe(false);
+	});
+
+	it('the send buttons work once a row needs nothing, is confirmed, or may reuse an earlier object', () => {
+		const v = planView(plan({ groups: [pdfGroup()] }, 'public'), { history: [] });
+		expect(canSend(v, new Set())).toBe(false);
+		expect(canSend(v, new Set(['img/d.pdf']))).toBe(true);
+		expect(canSend(planView(plan({ groups: [pdfGroup({ phase: 'candidate' })] }, 'public'), { history: [] }), new Set())).toBe(true);
+		expect(canSend(planView(plan({ groups: [pdfGroup(), group({ files: [file('img/a.png', B)] })] }, 'public'), { history: [] }), new Set())).toBe(true);
+	});
+
+	it('format labels for other files only; an example line per format', () => {
+		expect(formatKey('png')).toBeUndefined();
+		expect(formatKey('docx')).toBe('format.docx');
+		expect([confirmExampleKey('pdf'), confirmExampleKey('xlsx'), confirmExampleKey('zip'), confirmExampleKey('video')]).toEqual([
+			'upload.confirmExample.pdf',
+			'upload.confirmExample.office',
+			'upload.confirmExample.zip',
+			'upload.confirmExample.media',
+		]);
+	});
+});
+

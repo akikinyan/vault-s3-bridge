@@ -3,10 +3,11 @@
 // so repeated merge-and-trim converges to the same result on every device.
 import type { TargetKey } from '../storage/target';
 import type { DeepReadonly } from '../util/deepReadonly';
+import { FILE_FORMATS } from '../upload/fileType';
 import type { HistoryEntry, UploadFormat } from './types';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const FORMATS: readonly UploadFormat[] = ['png', 'jpeg', 'webp', 'gif'];
+const FORMATS: readonly UploadFormat[] = FILE_FORMATS;
 
 export function isSha256Hex(value: unknown): value is string {
 	return typeof value === 'string' && SHA256_HEX.test(value);

@@ -6,18 +6,41 @@ export function installObsidianDomHelpers(): void {
 	node.instanceOf = function (this: Node, type: Ctor<unknown>): boolean {
 		return this instanceof (type as unknown as abstract new () => unknown);
 	};
-	const el = Element.prototype as Element & Record<string, unknown>;
+	const el = Element.prototype as unknown as Record<string, unknown>;
 	el.addClass = function (this: Element, ...classes: string[]) {
 		this.classList.add(...classes);
 	};
 	el.removeClass = function (this: Element, ...classes: string[]) {
 		this.classList.remove(...classes);
 	};
-	const g = globalThis as Record<string, unknown>;
-	g.createSpan = (o: { cls?: string | string[]; text?: string } = {}) => {
-		const span = document.createElement('span');
-		if (o.cls) span.classList.add(...(Array.isArray(o.cls) ? o.cls : [o.cls]));
-		if (o.text) span.textContent = o.text;
-		return span;
+	el.hasClass = function (this: Element, cls: string) {
+		return this.classList.contains(cls);
 	};
+	el.empty = function (this: Element) {
+		this.replaceChildren();
+	};
+	el.setCssProps = function (this: HTMLElement, props: Record<string, string>) {
+		for (const [k, v] of Object.entries(props)) this.style.setProperty(k, v);
+	};
+	type Options = { cls?: string | string[]; text?: string; type?: string };
+	const make = (tag: string, o: Options = {}) => {
+		const e = document.createElement(tag);
+		if (o.cls) e.classList.add(...(Array.isArray(o.cls) ? o.cls : [o.cls]));
+		if (o.text) e.textContent = o.text;
+		if (o.type) e.setAttribute('type', o.type);
+		return e;
+	};
+	el.createEl = function (this: Element, tag: string, o?: Options) {
+		return this.appendChild(make(tag, o));
+	};
+	el.createDiv = function (this: Element, o?: Options) {
+		return this.appendChild(make('div', o));
+	};
+	el.createSpan = function (this: Element, o?: Options) {
+		return this.appendChild(make('span', o));
+	};
+	const g = globalThis as Record<string, unknown>;
+	g.createSpan = (o: Options = {}) => make('span', o);
+	g.createDiv = (o: Options = {}) => make('div', o);
+	g.createEl = (tag: string, o: Options = {}) => make(tag, o);
 }

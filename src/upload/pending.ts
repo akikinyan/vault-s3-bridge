@@ -9,6 +9,7 @@ import type { Classification, UploadFormat } from '../settings/types';
 import type { TargetKey } from '../storage/target';
 import { writeFileAtomic } from '../util/atomicFile';
 import { cloneData, deepFreeze, type DeepReadonly } from '../util/deepReadonly';
+import { FILE_FORMATS, imageContentType, isImageFormat } from './fileType';
 
 export const PENDING_STATES = ['recorded', 'putting', 'indeterminate', 'unresolved', 'done-unrecorded', 'delivered', 'stopped'] as const;
 export type PendingState = (typeof PENDING_STATES)[number];
@@ -16,6 +17,9 @@ export type KeyPhase = 'candidate' | 'prepared' | 'alt';
 
 export interface Occurrence {
 	original: string;
+	/** Embed or link (design 1-2). Version 1 records held embeds only. */
+	kind: 'embed' | 'link';
+	/** Embed: the alt text. Link: the shown text, already escaped (6-2). */
 	alt: string;
 	size?: string;
 	inTable: boolean;
@@ -35,6 +39,8 @@ export interface PendingItem {
 	sentSha256: string;
 	size: number;
 	format: UploadFormat;
+	/** The fixed Content-Type this item is put with (fileType.ts). */
+	contentType: string;
 	converter: string;
 	key: string;
 	altKey?: string;
@@ -46,6 +52,11 @@ export interface PendingItem {
 	uncertain: boolean;
 	/** A Put to this item's keys was sent in some session. Never goes back to false. */
 	putSent: boolean;
+	/**
+	 * I14 (e)(f): the object's delivery form is known to be `contentType` with no Content-Disposition (our Put
+	 * succeeded, or a Head matched both). Never goes back to false. Version 1 records start without it.
+	 */
+	deliveryChecked: boolean;
 	preparedKey: string;
 	phase: KeyPhase;
 	occurrences: Occurrence[];
@@ -57,7 +68,7 @@ export interface PendingItem {
 }
 
 /** What the caller supplies for a new record; state, flags and times are set by the store. */
-export type NewPendingItem = Omit<PendingItem, 'state' | 'uncertain' | 'putSent' | 'createdAt' | 'updatedAt' | 'altKey' | 'reason'>;
+export type NewPendingItem = Omit<PendingItem, 'state' | 'uncertain' | 'putSent' | 'deliveryChecked' | 'createdAt' | 'updatedAt' | 'altKey' | 'reason'>;
 
 /** Fields a caller may change directly. putting and indeterminate have their own methods. */
 export interface PendingPatch {
@@ -66,13 +77,16 @@ export interface PendingPatch {
 	phase?: KeyPhase;
 	state?: Exclude<PendingState, 'putting' | 'indeterminate'>;
 	reason?: string;
+	/** Only ever set to true. */
+	deliveryChecked?: true;
 }
 
-export type PendingStatus = 'unloaded' | 'ready' | 'damaged';
+/** future: this device's file was written by a newer version; it is kept as is and nothing may change it (1-2). */
+export type PendingStatus = 'unloaded' | 'ready' | 'damaged' | 'future';
 
 export type PendingResult =
 	| { ok: true }
-	| { ok: false; reason: 'not-ready' | 'write-failed' | 'unknown-item' | 'duplicate-item' | 'not-removable' | 'wrong-state' | 'not-found' | 'damaged-file' };
+	| { ok: false; reason: 'not-ready' | 'write-failed' | 'unknown-item' | 'duplicate-item' | 'not-removable' | 'wrong-state' | 'not-found' | 'damaged-file' | 'future-file' };
 
 type PendingFailure = Extract<PendingResult, { ok: false }>['reason'];
 
@@ -136,31 +150,42 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== '';
 const oneOf = <T extends string>(values: readonly T[], v: unknown): v is T => typeof v === 'string' && (values as readonly string[]).includes(v);
-const FORMATS: readonly UploadFormat[] = ['png', 'jpeg', 'webp', 'gif'];
+const FORMATS: readonly UploadFormat[] = FILE_FORMATS;
+const V1_FORMATS = ['png', 'jpeg', 'webp', 'gif'] as const;
+/** The newest record file version this code writes and understands. */
+export const PENDING_VERSION = 2;
+/** Printable ASCII only. */
+const CONTENT_TYPE = /^[\x20-\x7e]{1,200}$/;
 
-function parseOccurrence(raw: unknown): Occurrence | undefined {
+function parseOccurrence(raw: unknown, version: 1 | 2): Occurrence | undefined {
 	if (!isObj(raw) || !isStr(raw.original) || !isStr(raw.alt) || typeof raw.inTable !== 'boolean') return undefined;
 	if (raw.size !== undefined && !isStr(raw.size)) return undefined;
-	const o: Occurrence = { original: raw.original, alt: raw.alt, inTable: raw.inTable };
+	if (version === 2 && !oneOf(['embed', 'link'] as const, raw.kind)) return undefined;
+	const o: Occurrence = { original: raw.original, kind: version === 2 ? (raw.kind as Occurrence['kind']) : 'embed', alt: raw.alt, inTable: raw.inTable };
 	if (raw.size !== undefined) o.size = raw.size;
 	return o;
 }
 
-/** A complete, well-formed item, or undefined. States that imply a sent Put force uncertain and putSent. */
-export function parseItem(raw: unknown): PendingItem | undefined {
+/**
+ * A complete, well-formed item, or undefined. States that imply a sent Put force uncertain and putSent.
+ * Version 1 items (images only) are migrated (1-2): their Content-Type is Phase 3's, the delivery form was never
+ * checked, and every occurrence was an embed.
+ */
+export function parseItem(raw: unknown, version: 1 | 2 = PENDING_VERSION): PendingItem | undefined {
 	if (!isObj(raw)) return undefined;
 	const r = raw;
 	const strings = ['id', 'jobId', 'groupId', 'connectionId', 'target', 'notePath', 'sourcePath', 'converter', 'key', 'preparedKey', 'createdAt', 'updatedAt'] as const;
 	if (!strings.every((k) => isNonEmpty(r[k]))) return undefined;
 	if (!isSha256Hex(r.sourceSha256) || !isSha256Hex(r.sentSha256)) return undefined;
 	if (typeof r.size !== 'number' || !Number.isSafeInteger(r.size) || r.size < 0) return undefined;
-	if (!oneOf(['private', 'public'] as const, r.classification) || !oneOf(FORMATS, r.format)) return undefined;
+	if (!oneOf(['private', 'public'] as const, r.classification) || !oneOf(version === 1 ? V1_FORMATS : FORMATS, r.format)) return undefined;
+	if (version === 2 && (!isStr(r.contentType) || !CONTENT_TYPE.test(r.contentType) || typeof r.deliveryChecked !== 'boolean')) return undefined;
 	if (!oneOf(PENDING_STATES, r.state) || !oneOf(['candidate', 'prepared', 'alt'] as const, r.phase) || !oneOf(['replace', 'copy'] as const, r.apply)) return undefined;
 	if (typeof r.uncertain !== 'boolean' || typeof r.putSent !== 'boolean') return undefined;
 	if (r.altKey !== undefined && !isNonEmpty(r.altKey)) return undefined;
 	if (r.reason !== undefined && !isStr(r.reason)) return undefined;
 	if (!Array.isArray(r.occurrences)) return undefined;
-	const occurrences = r.occurrences.map(parseOccurrence);
+	const occurrences = r.occurrences.map((o) => parseOccurrence(o, version));
 	if (occurrences.some((o) => o === undefined)) return undefined;
 	const sent = r.state === 'putting' || r.state === 'indeterminate';
 	const item: PendingItem = {
@@ -176,12 +201,14 @@ export function parseItem(raw: unknown): PendingItem | undefined {
 		sentSha256: r.sentSha256,
 		size: r.size,
 		format: r.format,
+		contentType: version === 2 ? (r.contentType as string) : isImageFormat(r.format) ? imageContentType(r.format) : '',
 		converter: r.converter as string,
 		key: r.key as string,
 		state: r.state,
 		// A record left in putting means the process ended after the Put was sent: its outcome is unknown.
 		uncertain: r.uncertain || sent || MAY_EXIST.has(r.state),
 		putSent: r.putSent || sent,
+		deliveryChecked: version === 2 && r.deliveryChecked === true,
 		preparedKey: r.preparedKey as string,
 		phase: r.phase,
 		occurrences: occurrences as Occurrence[],
@@ -194,27 +221,42 @@ export function parseItem(raw: unknown): PendingItem | undefined {
 	return item;
 }
 
-/** All items of a record file, or undefined if anything in it is not understood (nothing is dropped silently). */
-export function parsePendingFile(text: string, deviceId: string): PendingItem[] | undefined {
+export type ParsedPendingFile = { version: 1 | 2; items: PendingItem[] } | 'future';
+
+/**
+ * All items of a record file, 'future' for a newer version (kept as is, never read further), or undefined if
+ * anything in it is not understood (nothing is dropped silently).
+ */
+export function parsePendingFile(text: string, deviceId: string): ParsedPendingFile | undefined {
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
 	} catch {
 		return undefined;
 	}
-	if (!isObj(raw) || raw.version !== 1 || raw.deviceId !== deviceId || !Array.isArray(raw.items)) return undefined;
-	const items = raw.items.map(parseItem);
+	if (!isObj(raw)) return undefined;
+	if (typeof raw.version === 'number' && Number.isInteger(raw.version) && raw.version > PENDING_VERSION) return 'future';
+	if ((raw.version !== 1 && raw.version !== 2) || raw.deviceId !== deviceId || !Array.isArray(raw.items)) return undefined;
+	const version = raw.version;
+	const items = raw.items.map((i) => parseItem(i, version));
 	if (items.some((i) => i === undefined)) return undefined;
 	const list = items as PendingItem[];
 	if (new Set(list.map((i) => i.id)).size !== list.length) return undefined;
-	return list;
+	return { version, items: list };
+}
+
+/** A version 1 item as version 1 wrote it: for rewriting another device's version 1 file (1-2). */
+function toV1(item: PendingItem): Record<string, unknown> {
+	const { contentType: _c, deliveryChecked: _d, occurrences, ...rest } = item;
+	return { ...rest, occurrences: occurrences.map(({ kind: _k, ...o }) => o) };
 }
 
 const PHASE_ORDER: readonly KeyPhase[] = ['candidate', 'prepared', 'alt'];
 
-const serialize = (deviceId: string, items: readonly PendingItem[]) => JSON.stringify({ version: 1, deviceId, items }, null, '\t');
+const serialize = (deviceId: string, items: readonly PendingItem[], version: 1 | 2 = PENDING_VERSION) =>
+	JSON.stringify({ version, deviceId, items: version === 1 ? items.map(toV1) : items }, null, '\t');
 
-export type OtherDeviceFile = { deviceId: string; count: number } | { deviceId: string; damaged: true };
+export type OtherDeviceFile = { deviceId: string; count: number } | { deviceId: string; damaged: true } | { deviceId: string; future: true };
 
 
 export class PendingStore {
@@ -249,8 +291,10 @@ export class PendingStore {
 		return this.enqueue(async () => {
 			const read = await this.io.read(this.fileName);
 			if (read.kind === 'missing') return this.become('ready', []);
-			const items = read.kind === 'text' ? parsePendingFile(read.text, this.deviceId) : undefined;
-			return items ? this.become('ready', items) : this.become('damaged', []);
+			const parsed = read.kind === 'text' ? parsePendingFile(read.text, this.deviceId) : undefined;
+			if (parsed === 'future') return this.become('future', []);
+			// A version 1 file is migrated in memory; the next write replaces it atomically as version 2.
+			return parsed ? this.become('ready', parsed.items) : this.become('damaged', []);
 		});
 	}
 
@@ -263,7 +307,7 @@ export class PendingStore {
 			for (const n of items) {
 				if (ids.has(n.id)) return 'duplicate-item';
 				ids.add(n.id);
-				added.push({ ...cloneData(n), state: 'recorded', uncertain: false, putSent: false, createdAt: at, updatedAt: at });
+				added.push({ ...cloneData(n), state: 'recorded', uncertain: false, putSent: false, deliveryChecked: false, createdAt: at, updatedAt: at });
 			}
 			return [...list, ...added];
 		});
@@ -338,6 +382,19 @@ export class PendingStore {
 		return this.remove(ids, (item) => !item.uncertain && !this.unsafe.has(item.id) && (item.state === 'recorded' || item.state === 'stopped'));
 	}
 
+	/**
+	 * Design 4-5: an item left out of a Put because the user did not confirm it (I15). Removed only when no Put of
+	 * it was ever sent; otherwise kept as stopped, in a group of its own so it can be resumed by itself later.
+	 */
+	removeIfNeverSent(ids: readonly string[]): Promise<PendingResult> {
+		return this.remove(ids, (item) => !item.putSent && !item.uncertain && !this.unsafe.has(item.id) && (item.state === 'recorded' || item.state === 'stopped'));
+	}
+
+	/** Design 4-5: the only change of groupId. The keys and the phase stay as they are. */
+	setAsideUnconfirmed(ids: readonly string[], groupId: string): Promise<PendingResult> {
+		return this.edit(ids, (item) => ({ ...item, state: 'stopped', reason: 'needs-confirmation', groupId }), { allowed: (item) => item.state !== 'putting' });
+	}
+
 	/** The user confirmed discarding the records (the UI warns that objects may remain). */
 	removeDiscarded(ids: readonly string[]): Promise<PendingResult> {
 		return this.remove(ids, () => true);
@@ -369,8 +426,10 @@ export class PendingStore {
 			for (const name of (await this.io.list()).sort()) {
 				const id = deviceIdOfFile(name);
 				if (!id || id === this.deviceId) continue;
-				const items = await this.readOther(id);
-				result.push(items ? { deviceId: id, count: items.length } : { deviceId: id, damaged: true });
+				const other = await this.readOther(id);
+				if (other === 'future') result.push({ deviceId: id, future: true });
+				else if (other && other !== 'missing') result.push({ deviceId: id, count: other.items.length });
+				else if (other === undefined) result.push({ deviceId: id, damaged: true });
 			}
 			return result;
 		});
@@ -384,20 +443,23 @@ export class PendingStore {
 		return this.enqueue(async () => {
 			if (this.state !== 'ready') return { ok: false, reason: 'not-ready' } as const;
 			if (!isDeviceId(otherDeviceId) || otherDeviceId === this.deviceId) return { ok: false, reason: 'not-found' } as const;
-			const theirs = await this.readOther(otherDeviceId);
-			if (theirs === 'missing') return { ok: false, reason: 'not-found' } as const;
-			if (!theirs) return { ok: false, reason: 'damaged-file' } as const;
+			const read = await this.readOther(otherDeviceId);
+			if (read === 'missing') return { ok: false, reason: 'not-found' } as const;
+			if (read === 'future') return { ok: false, reason: 'future-file' } as const;
+			if (!read) return { ok: false, reason: 'damaged-file' } as const;
+			const theirs = read.items;
 			const own = new Set(this.list.map((i) => i.id));
 			const merged = [...(cloneData(this.list) as PendingItem[]), ...theirs.filter((i) => !own.has(i.id))];
 			if (!(await this.writeOwn(merged))) return { ok: false, reason: 'write-failed' } as const;
 			// Re-read: the other file may have changed since (e.g. synchronisation). Keep only what was not taken.
 			const taken = new Set(theirs.map((i) => i.id));
 			const now = await this.readOther(otherDeviceId);
-			if (!Array.isArray(now)) return { ok: true } as const; // gone, or damaged meanwhile: left untouched
-			const rest = now.filter((i) => !taken.has(i.id));
+			if (!now || now === 'missing' || now === 'future') return { ok: true } as const; // changed meanwhile: left untouched
+			const rest = now.items.filter((i) => !taken.has(i.id));
 			const otherName = pendingFileName(otherDeviceId);
 			try {
-				if (rest.length > 0) await this.io.writeAtomic(otherName, serialize(otherDeviceId, rest));
+				// Written back in the version it was read in, so an older plugin on that device can still read it.
+				if (rest.length > 0) await this.io.writeAtomic(otherName, serialize(otherDeviceId, rest, now.version));
 				else await this.io.unlink(otherName);
 			} catch {
 				// Both files now hold the taken items; ids merge them into one on the next takeover.
@@ -414,6 +476,7 @@ export class PendingStore {
 		return this.enqueue(async () => {
 			if (!isDeviceId(otherDeviceId) || otherDeviceId === this.deviceId) return { ok: false, reason: 'not-found' } as const;
 			const name = pendingFileName(otherDeviceId);
+			if ((await this.readOther(otherDeviceId)) === 'future') return { ok: false, reason: 'future-file' } as const;
 			try {
 				await this.io.unlink(name);
 			} catch {
@@ -425,7 +488,7 @@ export class PendingStore {
 
 	// --- internals --------------------------------------------------------
 
-	private async readOther(deviceId: string): Promise<PendingItem[] | 'missing' | undefined> {
+	private async readOther(deviceId: string): Promise<ParsedPendingFile | 'missing' | undefined> {
 		const read = await this.io.read(pendingFileName(deviceId));
 		if (read.kind === 'missing') return 'missing';
 		return read.kind === 'text' ? parsePendingFile(read.text, deviceId) : undefined;
@@ -495,6 +558,7 @@ export class PendingStore {
 					...next,
 					uncertain: item.uncertain || next.uncertain || leftPutUnanswered,
 					putSent: item.putSent || next.putSent || next.state === 'putting',
+					deliveryChecked: item.deliveryChecked || next.deliveryChecked,
 					updatedAt: at,
 				};
 			});

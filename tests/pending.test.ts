@@ -14,7 +14,7 @@ import {
 	pendingFileName,
 	type ReadOutcome,
 } from '../src/upload/pending';
-import { fileText, newItem, OTHER, OWN, storedItem } from './fixtures/pendingItems';
+import { fileText, newItem, OTHER, OWN, storedItem, v1Item } from './fixtures/pendingItems';
 
 const OWN_FILE = pendingFileName(OWN);
 const OTHER_FILE = pendingFileName(OTHER);
@@ -84,7 +84,8 @@ describe('PendingStore — loading', () => {
 	it.each([
 		['empty file', ''],
 		['not JSON', '{"version":1,'],
-		['another version', JSON.stringify({ version: 2, deviceId: OWN, items: [] })],
+		['a version that is not an integer', JSON.stringify({ version: 1.5, deviceId: OWN, items: [] })],
+		['no version', JSON.stringify({ deviceId: OWN, items: [] })],
 		['another device id inside', fileText(OTHER, [])],
 		['one item it does not understand', fileText(OWN, [storedItem('a'), { ...storedItem('b'), state: 'sending' }])],
 		['an item with a missing field', fileText(OWN, [{ ...storedItem('a'), sentSha256: undefined }])],
@@ -227,6 +228,17 @@ describe('PendingStore — removal rules (7-2)', () => {
 			expect(await (await itemIn(state)).store.removeFailed(['a']), state).toEqual({ ok: false, reason: 'not-removable' });
 		}
 		expect(await (await itemIn('stopped', { uncertain: true, putSent: true })).store.removeFailed(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+	});
+
+	it('design 4-5: an unconfirmed item goes only if it was never sent; otherwise it is set aside in its own group', async () => {
+		expect(await (await itemIn('recorded')).store.removeIfNeverSent(['a'])).toEqual({ ok: true });
+		// Unlike removeFailed: a Put once sent keeps the record, even if every Put was rejected.
+		expect(await (await itemIn('stopped', { putSent: true })).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await (await itemIn('indeterminate', { putSent: true, uncertain: true })).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		expect(await (await itemIn('delivered')).store.removeIfNeverSent(['a'])).toEqual({ ok: false, reason: 'not-removable' });
+		const { store } = await itemIn('indeterminate', { putSent: true, uncertain: true, groupId: 'g-1' });
+		expect(await store.setAsideUnconfirmed(['a'], 'g-2')).toEqual({ ok: true });
+		expect(store.items[0]).toMatchObject({ state: 'stopped', reason: 'needs-confirmation', groupId: 'g-2', putSent: true, uncertain: true });
 	});
 
 	it('leaves putting without uncertainty only through a recorded rejection', async () => {
@@ -463,7 +475,7 @@ describe('PendingStore — files on disk', () => {
 		expect(again.status).toBe('ready');
 		expect(again.items[0]).toMatchObject({ id: 'a', state: 'putting', uncertain: true, putSent: true });
 		expect(await readdir(dir)).toEqual([OWN_FILE]);
-		expect(parsePendingFile(await readFile(join(dir, OWN_FILE), 'utf8'), OWN)).toHaveLength(1);
+		expect(parsePendingFile(await readFile(join(dir, OWN_FILE), 'utf8'), OWN)).toMatchObject({ version: 2, items: [{ id: 'a' }] });
 	});
 
 	it('keeps every file the store writes out of git', () => {
@@ -498,6 +510,21 @@ describe('PendingStore — files on disk', () => {
 			expect(await store.add([newItem('c')])).toEqual({ ok: true });
 		}, 30_000);
 
+		it.each([
+			['before-write', ['a'], 1],
+			['tmp-left', ['a'], 1],
+			['after-write', ['a', 'b'], 2],
+		])('migrating a version 1 file, %s: the earlier or the migrated state, nothing of the item lost', async (point, expected, version) => {
+			const dir = await tempDir();
+			await writeFile(join(dir, OWN_FILE), fileText(OWN, [v1Item('a', { state: 'stopped', uncertain: true, putSent: true })]));
+			run(dir, `v1-${point}`);
+			const store = await reload(dir);
+			expect(ids(store)).toEqual(expected);
+			expect(store.items[0]).toMatchObject({ id: 'a', state: 'stopped', uncertain: true, putSent: true, contentType: 'image/png' });
+			expect(JSON.parse(await readFile(join(dir, OWN_FILE), 'utf8'))).toMatchObject({ version });
+			expect(await store.others()).toEqual([]);
+		}, 30_000);
+
 		it('takeover killed before the other file is cleaned up: no item is lost or duplicated', async () => {
 			const dir = await tempDir();
 			await writeFile(join(dir, OTHER_FILE), fileText(OTHER, [storedItem('x'), storedItem('y', { state: 'putting' })]));
@@ -518,8 +545,8 @@ describe('occurrences survive a restart (Markdown is copied from the record late
 		const dir = await mkdtemp(join(tmpdir(), 'vsb-pending-'));
 		try {
 			const occurrences = [
-				{ original: '![[a.png\\|300]]', alt: 'a', size: '300', inTable: true },
-				{ original: '![図](a.png)', alt: '図', inTable: false },
+				{ original: '![[a.png\\|300]]', kind: 'embed' as const, alt: 'a', size: '300', inTable: true },
+				{ original: '![図](a.png)', kind: 'embed' as const, alt: '図', inTable: false },
 			];
 			const first = new PendingStore(nodePendingIO(dir), OWN);
 			expect(await first.load()).toBe('ready');
@@ -530,5 +557,92 @@ describe('occurrences survive a restart (Markdown is copied from the record late
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('record versions (design 1-2)', () => {
+	it('migrates a version 1 file in memory and writes it as version 2 on the next change', async () => {
+		const io = new FakeIO();
+		const v1 = fileText(OWN, [v1Item('a', { state: 'delivered', uncertain: true, putSent: true })]);
+		io.files.set(OWN_FILE, v1);
+		const store = await storeWith(io);
+		expect(store.status).toBe('ready');
+		expect(store.items[0]).toMatchObject({ contentType: 'image/png', deliveryChecked: false, putSent: true, uncertain: true, state: 'delivered' });
+		expect(store.items[0]?.occurrences[0]?.kind).toBe('embed');
+		expect(io.files.get(OWN_FILE)).toBe(v1); // reading does not write
+		expect((await store.add([newItem('b')])).ok).toBe(true);
+		const written = JSON.parse(io.files.get(OWN_FILE)!) as { version: number; items: PendingItem[] };
+		expect(written.version).toBe(2);
+		expect(written.items.map((i) => [i.id, i.contentType, i.deliveryChecked])).toEqual([
+			['a', 'image/png', false],
+			['b', 'image/png', false],
+		]);
+	});
+
+	it('rejects a version 1 item with a Phase 4 format, and a version 2 item without a Content-Type', async () => {
+		for (const text of [
+			fileText(OWN, [v1Item('a', { format: 'pdf' })]),
+			fileText(OWN, [{ ...storedItem('a'), contentType: undefined }], 2),
+			fileText(OWN, [{ ...storedItem('a'), contentType: 'text/plain\u0000' }], 2),
+			fileText(OWN, [{ ...storedItem('a'), deliveryChecked: 'yes' }], 2),
+			fileText(OWN, [{ ...storedItem('a'), occurrences: [{ original: '[[a.pdf]]', alt: 'a', inTable: false }] }], 2),
+		]) {
+			const io = new FakeIO();
+			io.files.set(OWN_FILE, text);
+			expect((await storeWith(io)).status).toBe('damaged');
+		}
+	});
+
+	it('reads version 2 items with any attachment format and keeps link occurrences', async () => {
+		const io = new FakeIO();
+		const item = storedItem('a', {
+			format: 'pdf',
+			contentType: 'application/pdf',
+			deliveryChecked: true,
+			occurrences: [{ original: '[[a.pdf|資料]]', kind: 'link', alt: '資料', inTable: false }],
+		});
+		io.files.set(OWN_FILE, fileText(OWN, [item], 2));
+		const store = await storeWith(io);
+		expect(store.items[0]).toEqual(item);
+	});
+
+	it('keeps a file of a newer version unchanged and refuses every change, including a reset', async () => {
+		const io = new FakeIO();
+		const text = JSON.stringify({ version: 3, deviceId: OWN, items: [{ anything: true }], newField: 1 });
+		io.files.set(OWN_FILE, text);
+		const store = await storeWith(io);
+		expect(store.status).toBe('future');
+		expect(store.items).toEqual([]);
+		expect(await store.add([newItem('x')])).toEqual({ ok: false, reason: 'not-ready' });
+		expect(await store.resetDamaged()).toEqual({ ok: false, reason: 'not-ready' });
+		expect(await store.takeOver(OTHER)).toEqual({ ok: false, reason: 'not-ready' });
+		expect(io.files.get(OWN_FILE)).toBe(text);
+		expect(io.log).toEqual([]);
+	});
+
+	it('neither takes over nor discards another device’s file of a newer version', async () => {
+		const io = new FakeIO();
+		const text = JSON.stringify({ version: 9, deviceId: OTHER, items: [] });
+		io.files.set(OTHER_FILE, text);
+		const store = await storeWith(io);
+		expect(await store.others()).toEqual([{ deviceId: OTHER, future: true }]);
+		expect(await store.takeOver(OTHER)).toEqual({ ok: false, reason: 'future-file' });
+		expect(await store.discardOther(OTHER)).toEqual({ ok: false, reason: 'future-file' });
+		expect(io.files.get(OTHER_FILE)).toBe(text);
+	});
+
+	it('rewrites another device’s version 1 file as version 1, so an older plugin there can still read it', async () => {
+		const io = new FakeIO();
+		io.files.set(OTHER_FILE, fileText(OTHER, [v1Item('a'), v1Item('b')]));
+		const store = await storeWith(io);
+		// The other device adds an item after we read its file: that item stays with it.
+		io.beforeWrite = (name) => {
+			if (name === OWN_FILE) io.files.set(OTHER_FILE, fileText(OTHER, [v1Item('a'), v1Item('b'), v1Item('c')]));
+		};
+		expect(await store.takeOver(OTHER)).toEqual({ ok: true });
+		const rest = JSON.parse(io.files.get(OTHER_FILE)!) as { version: number; items: Record<string, unknown>[] };
+		expect(rest.version).toBe(1);
+		expect(rest.items).toEqual([v1Item('c')]);
+		expect(JSON.parse(io.files.get(OWN_FILE)!)).toMatchObject({ version: 2 });
 	});
 });

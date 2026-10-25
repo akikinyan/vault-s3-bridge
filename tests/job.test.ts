@@ -15,6 +15,8 @@ import {
 	type JobPlan,
 	prepareJob,
 	type PrepareDeps,
+	rebuiltFormatMatches,
+	recordMarkdown,
 	type RunDeps,
 	runJob,
 	inExcludedFolder,
@@ -88,6 +90,10 @@ interface World {
 	encoder: FakeEncoder;
 	files: Map<string, Uint8Array>;
 	reads: string[];
+	/** Paths hashed from a stream (design 3-3). */
+	hashed: string[];
+	/** Paths read whole while sending, resuming or linking (RunDeps.readSource). */
+	wholeReads: string[];
 	changed: Set<string>;
 	disk: { text: string | undefined };
 	editors: FakeEditor[];
@@ -126,6 +132,8 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		encoder: new FakeEncoder(),
 		files,
 		reads: [],
+		hashed: [],
+		wholeReads: [],
 		changed: new Set(),
 		disk: { text: note },
 		editors: [],
@@ -170,7 +178,16 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 		signal: w.abort.signal,
 		authGeneration: (id) => profileOf(settings.device, id)?.generation,
 		sourceChanged: (p) => w.changed.has(p),
-		readSource: (p) => Promise.resolve(w.files.get(p)),
+		readSource: (p) => {
+			w.wholeReads.push(p);
+			return Promise.resolve(w.files.get(p));
+		},
+		hashSource: (p) => {
+			w.hashed.push(p);
+			const b = w.files.get(p);
+			return Promise.resolve(b && sha256Hex(b));
+		},
+		sourceSize: (p) => w.files.get(p)?.length,
 		note: note_,
 		copy: (text) => {
 			if (w.copyFails) return Promise.resolve(false);
@@ -188,7 +205,10 @@ async function world(connections: StorageConnection[] = [priv, pub], note = ''):
 async function plan(w: World, note: string, connection: StorageConnection = priv): Promise<JobPlan> {
 	const parsed = parseEmbeds(note);
 	if (!parsed.ok) throw new Error('unparsable');
-	const r = await prepareJob({ notePath: 'notes/日報.md', snapshot: note, embeds: parsed.embeds, connection: w.settings.current.connections.find((c) => c.id === connection.id)!, settings: w.settings.current }, w.prep);
+	const r = await prepareJob(
+		{ notePath: 'notes/日報.md', snapshot: note, embeds: parsed.embeds, links: parsed.links, references: parsed.references, connection: w.settings.current.connections.find((c) => c.id === connection.id)!, settings: w.settings.current },
+		w.prep,
+	);
 	if (!r.ok) throw new Error(r.reason);
 	return r.plan;
 }
@@ -609,7 +629,7 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		w.s3.objects.set(p.groups[0]!.key, checksumOf(p.groups[0]!.sentSha256));
 		w.s3.on('head', (key) => {
 			void w.settings.mutate(addPrivateFilesOp([sha256Hex(PNG_A)]));
-			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT' };
+			return { ChecksumSHA256: w.s3.objects.get(key), ChecksumType: 'FULL_OBJECT', ContentType: 'image/png' };
 		});
 		const r = await runJob(p, confirm(w, pub), w.run);
 		expect(w.s3.ops()).toEqual([`head:${p.groups[0]!.key}`]);
@@ -831,13 +851,13 @@ describe('uploadCommand (10-1)', () => {
 			detect: () => {
 				const p = parseEmbeds(note);
 				if (!p.ok) throw new Error();
-				return Promise.resolve({ ok: true, snapshot: note, embeds: p.embeds });
+				return Promise.resolve({ ...p, snapshot: note });
 			},
 			prepare: w.prep,
 			authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
 			confirm: (_plan, preview) => {
 				calls.push(preview ? 'confirm:preview' : 'confirm');
-				return Promise.resolve('replace');
+				return Promise.resolve({ apply: 'replace' as const, confirmed: [] });
 			},
 			run: (plan, confirmed) => {
 				calls.push('run');
@@ -858,11 +878,12 @@ describe('uploadCommand (10-1)', () => {
 		expect(w.pendingIO.writes).toBe(0);
 	});
 
-	it('upload: stops unless the record file is ready', async () => {
+	it.each(['damaged', 'future'] as const)('upload: stops unless the record file is ready (%s)', async (status) => {
 		const w = await world();
-		const { deps, calls } = command(w, { pending: { status: 'damaged' } });
+		const { deps, calls } = command(w, { pending: { status } });
 		expect(await uploadCommand(deps, false)).toEqual({ stop: 'pending-not-ready' });
 		expect(calls).toEqual([]);
+		expect(w.s3.calls).toEqual([]);
 	});
 
 	it('one job at a time; the lock is released afterwards, also after an error', async () => {
@@ -915,7 +936,7 @@ describe('uploadCommand (10-1)', () => {
 		const { deps } = command(w, {
 			confirm: async () => {
 				await w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, region: 'us-west-2' }, 'p'));
-				return 'replace';
+				return { apply: 'replace' as const, confirmed: [] };
 			},
 		});
 		const r = await uploadCommand(deps, false);
@@ -941,13 +962,15 @@ describe('resumableGroups (7-4)', () => {
 // --- resuming, copying (7-4) -----------------------------------------------------
 
 /** A job stopped by the stop button while its Put was in flight: the record stays as stopped and uncertain. */
-async function stoppedJob(w: World, note = '![[a.png]]', connection: StorageConnection = priv) {
+async function stoppedJob(w: World, note = '![[a.png]]', connection: StorageConnection = priv, confirmAll = false) {
 	const p = await plan(w, note, connection);
 	w.s3.on('put', (_key, signal) => {
 		w.abort.abort();
 		return Promise.reject(Object.assign(new Error('aborted'), { name: signal?.aborted ? 'AbortError' : 'Unexpected' }));
 	});
-	await runJob(p, confirm(w, connection), w.run);
+	const c = w.settings.current.connections.find((x) => x.id === connection.id)!;
+	const all = new Map(confirmAll ? p.groups.flatMap((g) => g.files.map((f) => [f.itemId, g.sentSha256] as const)) : []);
+	await runJob(p, confirmedValues(c, profileOf(w.settings.device, connection.id)?.generation, 'replace', all), w.run);
 	w.s3.calls.length = 0;
 	return p;
 }
@@ -965,7 +988,7 @@ const resumeCmd = (w: World, answer = true, lock = new JobLock()) => {
 				authGeneration: w.run.authGeneration,
 				confirm: (targets) => {
 					shown.push(targets.map((t) => t.groups.flat()));
-					return Promise.resolve(answer);
+					return Promise.resolve(answer ? [] : undefined);
 				},
 				run: (t, c) => resumeJob(t, c, resumeDeps(w)),
 			}),
@@ -1085,7 +1108,7 @@ describe('resume (7-4, 6-5)', () => {
 			authGeneration: w.run.authGeneration,
 			confirm: async () => {
 				await w.settings.mutate(saveConnectionOp(w.settings.current.connections[0], { ...priv, region: 'us-east-1' }, 'p'));
-				return true;
+				return [];
 			},
 			run: (t, c) => resumeJob(t, c, resumeDeps(w)),
 		});
@@ -1101,6 +1124,59 @@ describe('resume (7-4, 6-5)', () => {
 		expect('done' in r && r.done[0]!.results).toEqual([{ id: w.pending.items[0]!.id, outcome: 'stopped', reason: 'credentials' }]);
 		expect(w.s3.calls).toEqual([]);
 		expect(w.pending.items.map((i) => i.state)).toEqual(['stopped']);
+	});
+});
+
+describe('copyDelivered: public records whose delivery form was never checked (D22, design 3-6)', () => {
+	/** A delivered public record as Phase 3 left it: migrated from version 1, so deliveryChecked is false. */
+	async function phase3Record(w: World) {
+		w.copyFails = true;
+		await runJob(await plan(w, '![[a.png]]', pub), confirm(w, pub, 'copy'), w.run);
+		w.copyFails = false;
+		const name = [...w.pendingIO.files.keys()][0]!;
+		const file = JSON.parse(w.pendingIO.files.get(name)!) as { items: Record<string, unknown>[] };
+		file.items = file.items.map((i) => ({ ...i, deliveryChecked: false }));
+		w.pendingIO.files.set(name, JSON.stringify(file));
+		await w.pending.load();
+		expect(w.pending.items.map((i) => [i.state, i.deliveryChecked])).toEqual([['delivered', false]]);
+		return w.pending.items[0]!;
+	}
+	const withClient = (w: World) => ({ ...copyDeps(w), client: () => Promise.resolve(w.s3 as never), timeoutMs: 15_000 });
+
+	it('copies after one Head finds the recorded Content-Type, and records the check', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		w.s3.calls.length = 0;
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.s3.ops()).toEqual([`head:${item.key}`]);
+		expect(w.copied).toHaveLength(1);
+	});
+
+	it('does not copy when the object is served with another Content-Type, and keeps the record', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		w.s3.types.set(item.key, 'text/html');
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id: item.id, reason: 'delivery-unchecked' }] });
+		expect(w.copied).toEqual([]);
+		expect(w.pending.items.map((i) => [i.state, i.deliveryChecked])).toEqual([['delivered', false]]);
+	});
+
+	it('does not copy without a client (no Head can be made)', async () => {
+		const w = await world();
+		const item = await phase3Record(w);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 0, ok: true, skipped: [{ id: item.id, reason: 'delivery-unchecked' }] });
+		expect(w.copied).toEqual([]);
+	});
+
+	it('copies a record of our own Put without any Head', async () => {
+		const w = await world();
+		w.copyFails = true;
+		await runJob(await plan(w, '![[a.png]]', pub), confirm(w, pub, 'copy'), w.run);
+		w.copyFails = false;
+		expect(w.pending.items[0]?.deliveryChecked).toBe(true);
+		w.s3.calls.length = 0;
+		expect(await copyDelivered(withClient(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.s3.calls).toEqual([]);
 	});
 });
 
@@ -1210,3 +1286,366 @@ describe('copyDelivered (7-4)', () => {
 		expect(w.copied).toEqual(['![a\\|300](s3-bridge://work/k/a.png)']);
 	});
 });
+
+describe('files other than images (design 3-1, 3-3, 3-7, 3-8)', () => {
+	const file = (name: string) => new Uint8Array(readFileSync(new URL(`./fixtures/files/${name}`, import.meta.url)));
+	const PDF = file('p-ok.pdf');
+	const MP4 = file('v-mp4.mp4');
+	const other = async (connections?: StorageConnection[]) => {
+		const w = await world(connections);
+		w.prep = { ...w.prep, attachments: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/clip.mp4', MP4);
+		w.files.set('img/clip.mov', MP4);
+		w.files.set('img/page.html', file('a-page.html'));
+		w.files.set('img/blob.bin', file('m-random.bin'));
+		return w;
+	};
+
+	it('off (until links and confirmation exist): a PDF is unsupported, as in Phase 3', async () => {
+		const w = await world();
+		w.files.set('img/doc.pdf', PDF);
+		const p = await plan(w, '![[doc.pdf]]');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['unsupported']);
+	});
+
+	it('prepares a PDF without keeping its bytes, outside maxJobMB, with its own Content-Type and extension', async () => {
+		const w = await other();
+		await w.settings.mutate((d) => {
+			d.upload.maxJobMB = (PNG_A.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const p = await plan(w, '![[doc.pdf]] ![[a.png]]');
+		expect(p.groups).toHaveLength(1);
+		expect(p.groups[0]).toMatchObject({ key: 'k/doc.pdf', format: 'pdf', contentType: 'application/pdf', converter: 'c1;orig', sentSha256: sha256Hex(PDF), size: PDF.length, bytes: undefined, reencoded: false });
+		// The image is over the limit and waits for the next run, as before.
+		expect(p.deferred.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
+	});
+
+	it('sends a PDF: every source hashed from a stream, one read before the Put, delivered with its Content-Type', async () => {
+		const w = await other();
+		w.files.set('img/doc copy.pdf', PDF);
+		const p = await plan(w, '![[doc.pdf]] ![[doc copy.pdf]]');
+		expect(p.groups.map((g) => g.files.map((f) => f.sourcePath))).toEqual([['img/doc.pdf', 'img/doc copy.pdf']]);
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => f.outcome)).toEqual(['delivered', 'delivered']);
+		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
+		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
+		expect(w.s3.objects.get('k/doc.pdf')).toBe(checksumOf(sha256Hex(PDF)));
+		// Both sources hashed from a stream; only the first read whole, once; the links checked by hash too.
+		expect(new Set(w.hashed)).toEqual(new Set(['img/doc.pdf', 'img/doc copy.pdf']));
+		expect(w.wholeReads).toEqual(['img/doc.pdf']);
+		expect(w.settings.current.history.at(-1)).toMatchObject({ format: 'pdf', converter: 'c1;orig' });
+	});
+
+	it('equal bytes with different Content-Types are separate groups, each put with its own (3-8)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[clip.mp4]] ![[clip.mov]]');
+		expect(p.groups.map((g) => [g.key, g.contentType])).toEqual([
+			['k/clip.mp4', 'video/mp4'],
+			['k/clip.mov', 'video/quicktime'],
+		]);
+		await runJob(p, confirm(w, priv), w.run);
+		expect(w.s3.types.get('k/clip.mp4')).toBe('video/mp4');
+		expect(w.s3.types.get('k/clip.mov')).toBe('video/quicktime');
+	});
+
+	it('public: an object of the same bytes served as another Content-Type is not reused; nothing unconfirmed is put', async () => {
+		const w = await other();
+		const p = await plan(w, '![[clip.mov]]', pub);
+		const key = p.groups[0]!.key;
+		w.s3.objects.set(key, checksumOf(sha256Hex(MP4)));
+		w.s3.types.set(key, 'video/mp4');
+		const r = await runJob(p, confirm(w, pub), w.run);
+		// delivery-mismatch → the alternate key → 404 → a Put, which I15 refuses without a confirmation.
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'needs-confirmation']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+	});
+
+	it('public: active and ambiguous formats are listed without a key; private sends them as octet-stream', async () => {
+		const w = await other();
+		const p = await plan(w, '![[page.html]] ![[blob.bin]]', pub);
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['active-content', 'ambiguous-format']);
+		expect(JSON.stringify(p.skipped)).not.toContain('cdn.example.com');
+		const q = await plan(w, '![[page.html]] ![[blob.bin]]');
+		expect(q.groups.map((g) => [g.key, g.format, g.contentType])).toEqual([
+			['k/page.html', 'active', 'application/octet-stream'],
+			['k/blob.bin', 'other', 'application/octet-stream'],
+		]);
+	});
+
+	it('the size limit of other files: maxOtherFileMB, checked on what was read', async () => {
+		const w = await other();
+		await w.settings.mutate((d) => {
+			d.upload.maxOtherFileMB = (PDF.length - 1) / (1024 * 1024);
+			return { ok: true, value: undefined };
+		});
+		const p = await plan(w, '![[doc.pdf]] ![[a.png]]');
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([['![[doc.pdf]]', 'too-large']]);
+		expect(p.groups.map((g) => g.files[0]!.sourcePath)).toEqual(['img/a.png']);
+	});
+
+	it('a source changed after preparing is not sent (I3)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[doc.pdf]]');
+		w.files.set('img/doc.pdf', file('p-pdf-late-header.pdf'));
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'changed']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+	});
+
+	it('resumes a PDF: hashed from a stream, read once, put with the recorded Content-Type', async () => {
+		const w = await other();
+		await stoppedJob(w, '![[doc.pdf]]');
+		w.wholeReads.length = 0;
+		await resumeCmd(w).run();
+		expect(w.wholeReads).toEqual(['img/doc.pdf']);
+		expect(w.s3.ops()).toEqual(['head:k/doc.pdf', 'put:k/doc.pdf']);
+		expect(w.s3.types.get('k/doc.pdf')).toBe('application/pdf');
+		expect(w.pending.items.map((i) => i.state)).toEqual(['delivered']);
+	});
+
+	it('rebuiltFormatMatches (3-7): the bytes must still be the recorded format, Content-Type and public use', () => {
+		const rec = { format: 'pdf' as const, contentType: 'application/pdf', sourcePath: 'img/doc.pdf', classification: 'private' as const };
+		expect(rebuiltFormatMatches(PDF, rec)).toBe(true);
+		expect(rebuiltFormatMatches(file('z-plain.zip'), rec)).toBe(false);
+		expect(rebuiltFormatMatches(MP4, { ...rec, format: 'video', contentType: 'video/quicktime', sourcePath: 'img/clip.mp4' })).toBe(false);
+		expect(rebuiltFormatMatches(file('a-page.html'), { format: 'active', contentType: 'application/octet-stream', sourcePath: 'img/page.html', classification: 'private' })).toBe(true);
+		expect(rebuiltFormatMatches(file('a-page.html'), { format: 'active', contentType: 'application/octet-stream', sourcePath: 'img/page.html', classification: 'public' })).toBe(false);
+		expect(rebuiltFormatMatches(PNG_A, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(true);
+		expect(rebuiltFormatMatches(PDF, { format: 'png', contentType: 'image/png', sourcePath: 'img/a.png', classification: 'public' })).toBe(false);
+	});
+
+	it('a source that stops giving the prepared bytes right before the first Put leaves the job, as a change (6-6)', async () => {
+		const w = await other();
+		const p = await plan(w, '![[doc.pdf]]');
+		const read = w.run.readSource;
+		w.run = {
+			...w.run,
+			readSource: (path) => {
+				// Replaced after it was hashed: what is read is not the prepared bytes.
+				w.files.set(path, file('p-pdf-late-header.pdf'));
+				return read(path);
+			},
+		};
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.reason])).toEqual([['excluded', 'changed']]);
+		expect(w.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+		expect(w.pending.items).toEqual([]);
+	});
+
+	it('SVG: private as svg with its Content-Type; never public', async () => {
+		const w = await other();
+		w.files.set('img/pic.svg', file('a-img.svg'));
+		const q = await plan(w, '![[pic.svg]]');
+		expect(q.groups.map((g) => [g.format, g.contentType])).toEqual([['svg', 'image/svg+xml']]);
+		const p = await plan(w, '![[pic.svg]]', pub);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['active-content']);
+	});
+
+	it('bytes that start like an image but cannot be read are rejected as in Phase 3, not sent unstripped', async () => {
+		const w = await other();
+		const broken = PNG_A.slice();
+		broken.fill(0, 16, 24);
+		w.files.set('img/broken.png', broken);
+		w.files.set('img/broken.txt', broken);
+		const p = await plan(w, '![[broken.png]] ![[broken.txt]]');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['unsupported', 'unsupported']);
+	});
+});
+
+describe('links and their Markdown in the job (design 5-4, 6-2, 6-4)', () => {
+	const file = (name: string) => new Uint8Array(readFileSync(new URL(`./fixtures/files/${name}`, import.meta.url)));
+	const PDF = file('p-ok.pdf');
+	const on = async (connections?: StorageConnection[]) => {
+		const w = await world(connections);
+		w.prep = { ...w.prep, attachments: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/ノート.md', new TextEncoder().encode('# note'));
+		w.files.set('img/board.canvas', new TextEncoder().encode('{}'));
+		return w;
+	};
+	const mds = (p: JobPlan) => p.groups.flatMap((g) => g.files.flatMap((f) => f.occurrences.map((o) => o.markdown)));
+
+	it('off: links and other files change nothing in the plan (Phase 3)', async () => {
+		const w = await world();
+		w.files.set('img/doc.pdf', PDF);
+		const p = await plan(w, '![[a.png]] [[a.png]] [t](doc.pdf) [[doc.pdf]] [x][id]\n\n[id]: doc.pdf\n');
+		const q = await plan(w, '![[a.png]]');
+		expect(p.groups.map((g) => g.files.map((f) => f.occurrences.map((o) => o.original)))).toEqual([[['![[a.png]]']]]);
+		expect(p.skipped).toEqual(q.skipped);
+	});
+
+	it('private: the embed and the links of one file are one upload; each keeps its kind', async () => {
+		const w = await on();
+		const note = '![[doc.pdf]] [[doc.pdf]] [[doc.pdf|資料]] [t](doc.pdf)';
+		const p = await plan(w, note);
+		expect(p.groups).toHaveLength(1);
+		expect(mds(p)).toEqual(['![doc.pdf](s3-bridge://work/k/doc.pdf)', '[doc.pdf](s3-bridge://work/k/doc.pdf)', '[資料](s3-bridge://work/k/doc.pdf)', '[t](s3-bridge://work/k/doc.pdf)']);
+		w.disk.text = note;
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => [f.outcome, f.linked])).toEqual([['delivered', true]]);
+		expect(w.disk.text).toBe('![doc.pdf](s3-bridge://work/k/doc.pdf) [doc.pdf](s3-bridge://work/k/doc.pdf) [資料](s3-bridge://work/k/doc.pdf) [t](s3-bridge://work/k/doc.pdf)');
+	});
+
+	it('public: an embed of a PDF becomes a link; a link to an image is a link, sharing the embed\'s upload', async () => {
+		const w = await on();
+		const p = await plan(w, '![[doc.pdf|資料]] ![[a.png]] [[a.png]]', pub);
+		const base = 'https://cdn.example.com/';
+		const [pdf, png] = [p.groups.find((g) => g.format === 'pdf')!, p.groups.find((g) => g.format === 'png')!];
+		expect(pdf.files[0]!.occurrences.map((o) => o.markdown)).toEqual([`[資料](${base}${pdf.key})`]);
+		expect(png.files[0]!.occurrences.map((o) => o.markdown)).toEqual([`![](${base}${png.key})`, `[a.png](${base}${png.key})`]);
+	});
+
+	it('links to notes, headings and notes not written yet are not listed at all; attachments that cannot be used are', async () => {
+		const w = await on();
+		const p = await plan(w, '[[ノート]] [[ノート.md]] [[#見出し]] [[まだない]] [[board.canvas]] [n](ノート.md) [[doc.pdf#page=2]] [[missing.pdf]] [t](%E0%A4%A.pdf) %% [[doc.pdf]] %%');
+		expect(p.groups).toEqual([]);
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
+			['[[doc.pdf#page=2]]', 'subpath'],
+			['[[missing.pdf]]', 'not-found'],
+			['[t](%E0%A4%A.pdf)', 'unparsable'],
+			['[[doc.pdf]]', 'comment'],
+		]);
+	});
+
+	it('an archived file is not uploaded again (5-4)', async () => {
+		const w = await on();
+		const resolve = w.prep.resolveLink;
+		w.prep = { ...w.prep, resolveLink: (p) => (p === 'old.pdf' ? { path: '_s3-archive/old.pdf', basename: 'old', size: PDF.length, read: () => Promise.resolve(PDF) } : resolve(p)) };
+		const p = await plan(w, '[[old.pdf]] ![[old.pdf]]');
+		expect(p.skipped.map((s) => s.reason)).toEqual(['in-archive', 'in-archive']);
+	});
+
+	it('reference-style: the definition of an attachment is listed, never rewritten; the note is still uploaded (D18)', async () => {
+		const w = await on();
+		const p = await plan(w, '[資料][id] と [[doc.pdf]]\n\n[id]: doc.pdf\n[n]: ノート.md\n');
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([['[id]: doc.pdf', 'reference-style']]);
+		expect(mds(p)).toEqual(['[doc.pdf](s3-bridge://work/k/doc.pdf)']);
+	});
+
+	it('a link holding an embed: neither is rewritten, and nothing throws (9-1)', async () => {
+		const w = await on();
+		const note = '[![a](a.png)](doc.pdf) ![[a.png]]';
+		const p = await plan(w, note);
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
+			['[![a](a.png)](doc.pdf)', 'overlapping'],
+			['![a](a.png)', 'overlapping'],
+		]);
+		expect(p.groups.flatMap((g) => g.files.flatMap((f) => f.occurrences.map((o) => o.original)))).toEqual(['![[a.png]]']);
+		w.disk.text = note;
+		const r = await runJob(p, confirm(w, priv), w.run);
+		expect(r.files.map((f) => f.linked)).toEqual([true]);
+		expect(w.disk.text).toBe('[![a](a.png)](doc.pdf) ![a](s3-bridge://work/k/a.png)');
+	});
+
+	it('the alt of ![t](p) with an escape is not turned into a link text', async () => {
+		const w = await on();
+		const p = await plan(w, '![a\\*b](doc.pdf)', pub);
+		expect(p.skipped.map((s) => s.reason)).toEqual(['escaped-text']);
+	});
+
+	it('a record makes the same Markdown as the plan (6-4), for a public PDF embed and links in a table', async () => {
+		const note = ['| a | b |', '|---|---|', '| [[doc.pdf\\|50% off]] | ![[doc.pdf\\|300]] |', '', '![[doc.pdf]] [[doc.pdf|資料]]'].join('\n');
+		for (const c of [priv, pub]) {
+			const w = await on();
+			// The Put is stopped by an abort, so the record stays (public: confirmed, or I15 would leave it out).
+			const p = await stoppedJob(w, note, c, true);
+			const conn = w.settings.current.connections.find((x) => x.id === c.id)!;
+			expect(w.pending.items).toHaveLength(1);
+			expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed', 'embed', 'link']);
+			expect(recordMarkdown(w.pending.items[0]!, conn)).toEqual([...new Set(mds(p))]);
+		}
+	});
+
+	it('resumed, then copied from the settings: a link stays a link and an embed an embed (Step 4)', async () => {
+		const w = await on();
+		const p = await stoppedJob(w, '[[doc.pdf|資料]] ![[doc.pdf]]', priv);
+		expect(w.pending.items[0]!.occurrences.map((o) => o.kind)).toEqual(['link', 'embed']);
+		const r = await resumeCmd(w).run();
+		expect('done' in r && r.done[0]!.results.map((x) => x.outcome)).toEqual(['delivered']);
+		expect(await copyDelivered(copyDeps(w), NOTE)).toEqual({ copied: 1, ok: true, skipped: [] });
+		expect(w.copied).toHaveLength(1);
+		expect(w.copied[0]!.split('\n')).toEqual(mds(p));
+		expect(w.copied[0]).toMatch(/^\[資料\]\(s3-bridge:\/\/work\/[^)]+\.pdf\)\n!\[/);
+	});
+});
+
+describe('I15 from the screens (design 4-1, 4-3, 4-5)', () => {
+	const PDF = new Uint8Array(readFileSync(new URL('./fixtures/files/p-ok.pdf', import.meta.url)));
+	const pubWorld = async () => {
+		const w = await world([pub]);
+		w.prep = { ...w.prep, attachments: true };
+		w.files.set('img/doc.pdf', PDF);
+		w.files.set('img/doc copy.pdf', PDF);
+		return w;
+	};
+
+	it('a confirmation counts only for an item on the screen and the bytes it showed', async () => {
+		const w = await pubWorld();
+		let seen: ReadonlyMap<string, string> | undefined;
+		const r = await uploadCommand(
+			{
+				lock: new JobLock(),
+				pending: w.pending,
+				settings: w.settings,
+				notePath: 'n.md',
+				pickConnection: () => Promise.resolve(w.settings.current.connections[0]),
+				detect: () => {
+					const p = parseEmbeds('![[doc.pdf]]');
+					if (!p.ok) throw new Error();
+					return Promise.resolve({ ...p, snapshot: '![[doc.pdf]]' });
+				},
+				prepare: w.prep,
+				authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
+				confirm: (plan) => Promise.resolve({ apply: 'copy' as const, confirmed: [plan.groups[0]!.files[0]!.itemId, 'not-on-screen'] }),
+				run: (plan, confirmed) => {
+					seen = confirmed.confirmations;
+					return runJob(plan, confirmed, w.run);
+				},
+			},
+			false,
+		);
+		expect('done' in r && r.done.files.map((f) => [f.outcome, f.reason])).toEqual([['delivered', undefined]]);
+		expect([...seen!.values()]).toEqual([sha256Hex(PDF)]);
+		expect(w.s3.types.get(w.s3.calls.find((c) => c.op === 'put')!.key)).toBe('application/pdf');
+		expect(w.copied[0]).toMatch(/^\[doc\.pdf\]\(https:\/\/cdn\.example\.com\//);
+	});
+
+	it('resuming two uncertain files, confirming one: the other is set aside and can be resumed alone later', async () => {
+		const w = await pubWorld();
+		const p = await plan(w, '![[doc.pdf]] ![[doc copy.pdf]]', pub);
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		w.s3.on('put', timeout).on('put', timeout);
+		const ids = p.groups[0]!.files.map((f) => f.itemId);
+		const all = new Map(ids.map((id) => [id, p.groups[0]!.sentSha256] as const));
+		const c = () => w.settings.current.connections.find((x) => x.id === pub.id)!;
+		await runJob(p, confirmedValues(c(), profileOf(w.settings.device, pub.id)?.generation, 'copy', all), w.run);
+		expect(w.pending.items.map((i) => i.state)).toEqual(['indeterminate', 'indeterminate']);
+
+		const resume = (pick: string[]) =>
+			resumeCommand({
+				lock: new JobLock(),
+				pending: w.pending,
+				settings: w.settings,
+				authGeneration: (id) => profileOf(w.settings.device, id)?.generation,
+				confirm: () => Promise.resolve(pick),
+				run: (t, cf) => resumeJob(t, cf, resumeDeps(w)),
+			});
+		await resume([ids[0]!]);
+		const [a, b] = ids.map((id) => w.pending.items.find((i) => i.id === id));
+		expect(a?.state).toBe('delivered');
+		expect([b?.state, b?.reason]).toEqual(['stopped', 'needs-confirmation']);
+		// A's record (delivered, waiting for its link) does not keep B from being resumed.
+		expect(resumableGroups(w.pending.items)).toEqual([[ids[1]]]);
+		w.s3.calls.length = 0;
+		await resume([ids[1]!]);
+		// The object A made is reused: same bytes, served as application/pdf.
+		expect(w.s3.calls.map((x) => x.op)).toEqual(['head']);
+		expect(w.pending.items.find((i) => i.id === ids[1])?.state).toBe('delivered');
+	});
+});
+

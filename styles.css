@@ -73,3 +73,69 @@ img.vault-s3-bridge-loading {
 	color: var(--text-muted);
 	word-break: break-all;
 }
+
+/* Phase 4 previews (design 7-2, 7-4): text and information shown after the hidden img. */
+.vault-s3-bridge-text-box {
+	display: block;
+	max-height: 24em;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-text {
+	margin: 0;
+	padding: var(--size-4-2);
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: var(--font-smaller);
+}
+
+.vault-s3-bridge-text-note,
+.vault-s3-bridge-info-meta {
+	color: var(--text-muted);
+	font-size: var(--font-smaller);
+}
+
+.vault-s3-bridge-info {
+	display: inline-block;
+	padding: var(--size-4-2) var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-info-name {
+	font-weight: var(--font-semibold);
+}
+
+/* Design 7-2: PDF pages drawn on canvases, laid out with the page shape before they are drawn. */
+.vault-s3-bridge-pdf {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	max-height: 80vh;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.vault-s3-bridge-pdf-page {
+	position: relative;
+	/* Keeps the page shape inside the scrolling box, so only pages really in view are drawn (7-3). */
+	flex-shrink: 0;
+	width: 100%;
+	aspect-ratio: var(--vault-s3-bridge-page-ratio, 1 / 1.414);
+	background-color: var(--background-secondary);
+}
+
+.vault-s3-bridge-pdf-page canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+.vault-s3-bridge-pdf-note {
+	padding: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-smaller);
+}

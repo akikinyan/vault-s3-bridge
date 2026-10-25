@@ -89,11 +89,12 @@ function item(id: string, over: Partial<NewPendingItem> = {}): NewPendingItem {
 		sentSha256: SENT,
 		size: BODY.byteLength,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		key: 'k/a.png',
 		preparedKey: 'k/a.png',
 		phase: 'prepared',
-		occurrences: [{ original: `![[${id}.png]]`, alt: id, inTable: false }],
+		occurrences: [{ original: `![[${id}.png]]`, kind: 'embed', alt: id, inTable: false }],
 		apply: 'replace',
 		...over,
 	};
@@ -120,7 +121,8 @@ describe('sendGroup — order (7-2, 10-3)', () => {
 		]);
 		expect(s.settings.current.privateFiles).toEqual([SOURCE_A, SENT].sort());
 		expect(s.settings.current.history).toMatchObject([{ id: 'h1', key: 'k/a.png', target: 'aws:example-private', sourceSha256: SOURCE_A, sentSha256: SENT }]);
-		expect(s.s3.calls.map((c) => c.timeout)).toEqual([15_000, 60_000]);
+		// A Put has no total limit, only the handler's inactivity limit (design 2-3, rev.5).
+		expect(s.s3.calls.map((c) => c.timeout)).toEqual([15_000, 0]);
 		expect(s.s3.objects.get('k/a.png')).toBe(checksumOf(SENT));
 	});
 
@@ -935,5 +937,281 @@ describe('Step 4: I1 for hashes that are already recorded', () => {
 		const [r] = await sendGroup([item('b', { sourcePath: 'assets/b.png' })], BODY, s.deps);
 		expect(r?.outcome).not.toBe('excluded');
 		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+	});
+});
+
+describe('delivery form of public objects (I14, design 3-4 and 3-5)', () => {
+	const ALT = `k/a-${SENT.slice(0, 8)}.png`;
+
+	it('does not reuse a public object with the same bytes but another Content-Type; puts at the alternate key with its own', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.types.set('k/a.png', 'text/html');
+		expect(await sendGroup([pubItem('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'delivered', key: ALT }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png', `head:${ALT}`, `put:${ALT}`]);
+		expect(s.s3.types.get(ALT)).toBe('image/png');
+		expect(stateOf(s, 'a')?.deliveryChecked).toBe(true);
+	});
+
+	it('does not reuse a public object that carries a Content-Disposition', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.dispositions.set('k/a.png', 'inline');
+		expect((await sendGroup([pubItem('a')], BODY, s.deps))[0]?.key).toBe(ALT);
+	});
+
+	it('records a public reuse as checked, and a private reuse (bytes only) as not checked', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		await sendGroup([pubItem('a')], BODY, s.deps);
+		expect(stateOf(s, 'a')?.deliveryChecked).toBe(true);
+		const p = await setup();
+		p.s3.objects.set('k/a.png', checksumOf(SENT));
+		p.s3.types.set('k/a.png', 'text/html');
+		expect(await sendGroup([item('a')], BODY, p.deps)).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
+		expect(p.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(p, 'a')?.deliveryChecked).toBe(false);
+	});
+
+	it('never puts a public item of a format that may not be public, though its Head is allowed', async () => {
+		const s = await setup();
+		const r = await sendGroup([pubItem('a', { format: 'svg', contentType: 'image/svg+xml' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'stopped', reason: 'public-format' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.png']);
+		expect(stateOf(s, 'a')).toMatchObject({ state: 'stopped', putSent: true, uncertain: false });
+	});
+});
+
+describe('sendGroup — files other than images (design 3-3, 3-5, 3-7)', () => {
+	const pdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		item(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'k/a.pdf', preparedKey: 'k/a.pdf', ...over });
+
+	it('reads the bytes right before the first Put and keeps them for the recovery in the same group', async () => {
+		const s = await setup();
+		let rebuilds = 0;
+		let checks = 0;
+		const deps: UploaderDeps = {
+			...s.deps,
+			rebuild: () => {
+				rebuilds++;
+				return Promise.resolve(BODY);
+			},
+			sourceUnchanged: () => {
+				checks++;
+				return Promise.resolve(true);
+			},
+		};
+		s.s3.on('put', () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' })));
+		expect(await sendGroup([pdf('a')], undefined, deps)).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.pdf' }]);
+		// Put (unknown) → recover-check Head 404 → resend-check → Put again with the held bytes.
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf', 'put:k/a.pdf', 'head:k/a.pdf', 'put:k/a.pdf']);
+		expect(rebuilds).toBe(1);
+		// Before the first Put (send mode) and before the re-send: the sources are still checked.
+		expect(checks).toBeGreaterThanOrEqual(2);
+		expect(s.s3.types.get('k/a.pdf')).toBe('application/pdf');
+	});
+
+	it('a source changed before the re-send of the held bytes: unresolved, no second Put', async () => {
+		const s = await setup();
+		let putDone = false;
+		const deps: UploaderDeps = { ...s.deps, sourceUnchanged: () => Promise.resolve(!putDone) };
+		s.s3.on('put', () => {
+			putDone = true;
+			return Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		});
+		expect(await sendGroup([pdf('a')], undefined, deps)).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'cannot-rebuild' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf', 'put:k/a.pdf', 'head:k/a.pdf']);
+	});
+
+	it('bytes that are no longer the recorded format are not sent: unresolved', async () => {
+		const s = await setup();
+		const r = await sendGroup([pdf('a')], undefined, { ...s.deps, rebuild: () => Promise.resolve('format-changed' as const) });
+		expect(r).toEqual([{ id: 'a', outcome: 'unresolved', reason: 'format-changed' }]);
+		expect(s.s3.ops()).toEqual(['head:k/a.pdf']);
+	});
+
+	it('public: an item whose format needs confirming is never put unconfirmed (I15), but may be reused', async () => {
+		const s = await setup();
+		expect(await sendGroup([pubItem('x', { format: 'pdf', contentType: 'application/pdf', key: 'p/x.pdf', preparedKey: 'p/x.pdf' })], undefined, s.deps)).toEqual([
+			{ id: 'x', outcome: 'excluded', reason: 'needs-confirmation' },
+		]);
+		expect(s.s3.ops()).toEqual(['head:p/x.pdf']);
+		// 4-5: never put, so the record goes.
+		expect(s.pending.items).toEqual([]);
+
+		const t = await setup();
+		t.s3.objects.set('p/y.pdf', checksumOf(SENT));
+		t.s3.types.set('p/y.pdf', 'application/pdf');
+		expect(await sendGroup([pubItem('y', { format: 'pdf', contentType: 'application/pdf', key: 'p/y.pdf', preparedKey: 'p/y.pdf' })], undefined, t.deps)).toEqual([
+			{ id: 'y', outcome: 'delivered', key: 'p/y.pdf' },
+		]);
+		expect(t.s3.ops()).toEqual(['head:p/y.pdf']);
+
+		const u = await setup();
+		const confirmed = { ...u.deps, isConfirmed: () => true };
+		expect(await sendGroup([pubItem('z', { format: 'pdf', contentType: 'application/pdf', key: 'p/z.pdf', preparedKey: 'p/z.pdf' })], undefined, confirmed)).toEqual([
+			{ id: 'z', outcome: 'delivered', key: 'p/z.pdf' },
+		]);
+		expect(u.s3.types.get('p/z.pdf')).toBe('application/pdf');
+	});
+});
+
+describe('sendGroup — I15 in a mixed group (design 4-2, 4-5)', () => {
+	const pdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		pubItem(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'p/a.pdf', preparedKey: 'p/a.pdf', ...over });
+
+	it('puts only the confirmed items; an unconfirmed one never sent leaves with its record', async () => {
+		const s = await setup();
+		const deps = { ...s.deps, isConfirmed: (i: { id: string }) => i.id === 'a' };
+		expect(await sendGroup([pdf('a'), pdf('b')], undefined, deps)).toEqual(
+			expect.arrayContaining([
+				{ id: 'a', outcome: 'delivered', key: 'p/a.pdf' },
+				{ id: 'b', outcome: 'excluded', reason: 'needs-confirmation' },
+			]),
+		);
+		expect(s.s3.ops()).toEqual(['head:p/a.pdf', 'put:p/a.pdf']);
+		expect(s.pending.items.map((i) => i.id)).toEqual(['a']);
+	});
+
+	it('nothing confirmed: no Put at all', async () => {
+		const s = await setup();
+		await sendGroup([pdf('a'), pdf('b')], undefined, s.deps);
+		expect(s.s3.ops()).toEqual(['head:p/a.pdf']);
+		expect(s.pending.items).toEqual([]);
+	});
+
+	it('an unconfirmed item that was sent before stays stopped in a group of its own, even if every Put was rejected', async () => {
+		const s = await setup();
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		s.s3.on('put', timeout).on('put', timeout);
+		await sendGroup([pdf('a'), pdf('b')], undefined, { ...s.deps, isConfirmed: () => true });
+		expect(s.pending.items.map((i) => [i.id, i.state, i.putSent, i.groupId])).toEqual([
+			['a', 'indeterminate', true, 'g-1'],
+			['b', 'indeterminate', true, 'g-1'],
+		]);
+		s.s3.calls.length = 0;
+		const r = await resumeGroup(['a', 'b'], { ...s.deps, isConfirmed: (i) => i.id === 'a' });
+		expect(r).toEqual(expect.arrayContaining([{ id: 'a', outcome: 'delivered', key: 'p/a.pdf' }, { id: 'b', outcome: 'stopped', reason: 'needs-confirmation' }]));
+		const b = stateOf(s, 'b')!;
+		expect([b.state, b.reason, b.key, b.groupId === 'g-1']).toEqual(['stopped', 'needs-confirmation', 'p/a.pdf', false]);
+	});
+
+	it('setting an unconfirmed item aside cannot be written: nothing is put, and both stay in their group', async () => {
+		const s = await setup();
+		const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+		s.s3.on('put', timeout).on('put', timeout);
+		await sendGroup([pdf('a'), pdf('b')], undefined, { ...s.deps, isConfirmed: () => true });
+		s.s3.calls.length = 0;
+		s.pending.setAsideUnconfirmed = () => Promise.resolve({ ok: false, reason: 'write-failed' });
+		const r = await resumeGroup(['a', 'b'], { ...s.deps, isConfirmed: (i) => i.id === 'a' });
+		expect(r).toEqual([
+			{ id: 'a', outcome: 'stopped', reason: 'record-failed' },
+			{ id: 'b', outcome: 'stopped', reason: 'record-failed' },
+		]);
+		expect(s.s3.calls.filter((c) => c.op === 'put')).toEqual([]);
+		expect(s.pending.items.map((i) => i.groupId)).toEqual(['g-1', 'g-1']);
+	});
+});
+
+describe('Step 4: public formats and the classification rules with files other than images', () => {
+	const ALT = `k/a-${SENT.slice(0, 8)}.png`;
+	const timeout = () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+	const privPdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		item(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'k/a.pdf', preparedKey: 'k/a.pdf', ...over });
+	const pubPdf = (id: string, over: Partial<NewPendingItem> = {}) =>
+		pubItem(id, { sourcePath: `assets/${id}.pdf`, format: 'pdf', contentType: 'application/pdf', key: 'p/a.pdf', preparedKey: 'p/a.pdf', ...over });
+	const puts = (s: Setup) => s.s3.calls.filter((c) => c.op === 'put').map((c) => c.key);
+
+	it('I1: a private PDF is recorded as private content before its Put', async () => {
+		const s = await setup();
+		expect(await sendGroup([privPdf('a')], BODY, s.deps)).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.pdf' }]);
+		expect(s.settings.current.privateFiles).toEqual(expect.arrayContaining([SOURCE_A, SENT]));
+	});
+
+	it('I1: a private PDF whose record cannot be saved is left out, never put', async () => {
+		const s = await setup();
+		const r = await sendGroup([privPdf('a')], BODY, {
+			...s.deps,
+			settings: { checkpoint: s.settings.checkpoint.bind(s.settings), mutate: () => Promise.resolve({ ok: false, error: [], reason: 'save-failed' }) },
+		});
+		expect(r).toEqual([{ id: 'a', outcome: 'excluded', reason: 'private-not-saved' }]);
+		expect(puts(s)).toEqual([]);
+	});
+
+	it('I2: a confirmed public PDF whose bytes were sent to private storage sends nothing', async () => {
+		const s = await setup();
+		await sendGroup([privPdf('p', { sourceSha256: SOURCE_B })], BODY, s.deps);
+		s.s3.calls.length = 0;
+		const r = await sendGroup([pubPdf('x')], BODY, { ...s.deps, isConfirmed: () => true });
+		expect(r).toEqual([{ id: 'x', outcome: 'stopped', reason: 'private-recorded' }]);
+		expect(s.s3.calls).toEqual([]);
+	});
+
+	it('I14 (e): a history candidate with the same bytes but another Content-Type is not reused', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/old.png', checksumOf(SENT));
+		s.s3.types.set('k/old.png', 'application/octet-stream');
+		const r = await sendGroup([pubItem('a', { key: 'k/old.png', phase: 'candidate', preparedKey: 'k/a.png' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key: 'k/a.png' }]);
+		expect(puts(s)).toEqual(['k/a.png']);
+		expect(s.s3.types.get('k/a.png')).toBe('image/png');
+	});
+
+	it('I14 (e): after 412, an object with the same bytes but another Content-Type is not reused', async () => {
+		const s = await setup();
+		s.s3.objects.set('k/a.png', checksumOf(SENT));
+		s.s3.types.set('k/a.png', 'text/html');
+		// The first Head saw nothing; the Put then meets the object another tool wrote meanwhile.
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound')));
+		const r = await sendGroup([pubItem('a')], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'delivered', key: ALT }]);
+		expect(puts(s)).toEqual(['k/a.png', ALT]);
+		expect(s.s3.types.get(ALT)).toBe('image/png');
+	});
+
+	it('I14 (e): an unknown Put result that turns out to be another Content-Type is not taken as delivered', async () => {
+		const s = await setup();
+		s.s3.on('put', () => {
+			s.s3.objects.set('k/a.png', checksumOf(SENT));
+			s.s3.types.set('k/a.png', 'text/html');
+			return timeout();
+		});
+		const [r] = await sendGroup([pubItem('a')], BODY, s.deps);
+		expect(r).toEqual({ id: 'a', outcome: 'unresolved', reason: 'different-delivery' });
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png', 'head:k/a.png']);
+	});
+
+	it.each([
+		['the history candidate is gone (404)', (s: Setup) => void s],
+		['the history candidate holds other bytes', (s: Setup) => void s.s3.objects.set('p/old.pdf', checksumOf('0'.repeat(64)))],
+	])('I15: an unconfirmed PDF is not put when %s', async (_label, arrange) => {
+		const s = await setup();
+		arrange(s);
+		const r = await sendGroup([pubPdf('a', { key: 'p/old.pdf', phase: 'candidate', preparedKey: 'p/a.pdf' })], BODY, s.deps);
+		expect(r).toEqual([{ id: 'a', outcome: 'excluded', reason: 'needs-confirmation' }]);
+		expect(puts(s)).toEqual([]);
+	});
+
+	it('I15: after a 412 in a mixed group, only the confirmed item is put again', async () => {
+		const s = await setup();
+		s.s3.objects.set('p/a.pdf', checksumOf('0'.repeat(64)));
+		s.s3.on('head', () => Promise.reject(sdkError(404, 'NotFound')));
+		const r = await sendGroup([pubPdf('a'), pubPdf('b')], BODY, { ...s.deps, isConfirmed: (i) => i.id === 'a' });
+		expect(r).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'a', outcome: 'delivered' }), { id: 'b', outcome: 'excluded', reason: 'needs-confirmation' }]));
+		expect(stateOf(s, 'b')).toBeUndefined();
+		expect(puts(s).length).toBeGreaterThan(0);
+	});
+});
+
+describe('a Put whose body stops moving (Step 4, putWatch)', () => {
+	it('is ended after the network timeout without progress, as an unknown result that the group then recovers', async () => {
+		const s = await setup();
+		const deps: UploaderDeps = { ...s.deps, timeoutMs: 50, timers: { set: (run, ms) => setTimeout(run, ms), clear: (t) => clearTimeout(t as NodeJS.Timeout) } };
+		// The fake takes no piece of the body and waits for the abort the watch raises.
+		s.s3.on('put', (_key, signal) => new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))));
+		const [r] = await sendGroup([item('a')], BODY, deps);
+		// Unknown, not a stop by the user: the recovery Heads the key, finds nothing and sends again.
+		expect(r).toEqual({ id: 'a', outcome: 'delivered', key: 'k/a.png' });
+		expect(s.s3.ops()).toEqual(['head:k/a.png', 'put:k/a.png', 'head:k/a.png', 'put:k/a.png']);
 	});
 });

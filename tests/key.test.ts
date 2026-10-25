@@ -152,3 +152,15 @@ describe('templates', () => {
 		expect(identifyingVariables('{foldername}/{hash}')).toEqual(['foldername']);
 	});
 });
+
+describe('{ext} of attachments (design 3-2)', () => {
+	it('keeps the source extension, lowercased, and uses bin without one', () => {
+		expect(buildKey('a/{filename}.{ext}', input({ sourcePath: 'docs/Report.PDF', format: 'pdf' }))).toEqual({ ok: true, key: 'a/Report.pdf' });
+		expect(buildKey('a/{hash}.{ext}', input({ sourcePath: 'docs/README', format: 'other' }))).toEqual({ ok: true, key: 'a/0123456789abcdef.bin' });
+		expect(buildKey('a/{filename}.{ext}', input({ sourcePath: 'x/clip.mov', format: 'video' }))).toEqual({ ok: true, key: 'a/clip.mov' });
+	});
+
+	it('still follows the bytes sent for images (a converted image changes its extension)', () => {
+		expect(buildKey('a/{filename}.{ext}', input({ sourcePath: 'x/photo.jpeg', format: 'webp' }))).toEqual({ ok: true, key: 'a/photo.webp' });
+	});
+});

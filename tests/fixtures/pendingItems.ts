@@ -17,11 +17,12 @@ export function newItem(id: string, over: Partial<NewPendingItem> = {}): NewPend
 		sentSha256: 'b'.repeat(64),
 		size: 10,
 		format: 'png',
+		contentType: 'image/png',
 		converter: 'c1;orig',
 		key: `k/${id}.png`,
 		preparedKey: `k/${id}.png`,
 		phase: 'prepared',
-		occurrences: [{ original: `![[${id}.png]]`, alt: id, inTable: false }],
+		occurrences: [{ original: `![[${id}.png]]`, kind: 'embed', alt: id, inTable: false }],
 		apply: 'replace',
 		...over,
 	};
@@ -34,10 +35,17 @@ export function storedItem(id: string, over: Partial<PendingItem> = {}): Pending
 		state: 'recorded',
 		uncertain: false,
 		putSent: false,
+		deliveryChecked: false,
 		createdAt: '2026-10-17T00:00:00.000Z',
 		updatedAt: '2026-10-17T00:00:00.000Z',
 		...over,
 	};
 }
 
-export const fileText = (deviceId: string, items: unknown[]) => JSON.stringify({ version: 1, deviceId, items });
+export const fileText = (deviceId: string, items: unknown[], version: number = 1) => JSON.stringify({ version, deviceId, items });
+
+/** An item exactly as Phase 3 (record version 1) wrote it: no Content-Type, no delivery check, no occurrence kind. */
+export function v1Item(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+	const { contentType: _c, deliveryChecked: _d, occurrences, ...rest } = storedItem(id);
+	return { ...rest, occurrences: occurrences.map(({ kind: _k, ...o }) => o), ...over };
+}

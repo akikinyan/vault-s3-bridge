@@ -1,4 +1,5 @@
 import { REFERENCE_SCHEME } from '../reference/reference';
+import { contentRenderer, type ContentRenderer, type Display } from './display';
 import { PreviewError } from './errors';
 import type { Lease } from './service';
 
@@ -27,7 +28,7 @@ function imagesIn(node: Node): HTMLImageElement[] {
 export class ImageReplacer {
 	private readonly leases = new Map<HTMLImageElement, Lease>();
 	private readonly ownSrc = new WeakMap<HTMLImageElement, string | null>();
-	private readonly placeholders = new WeakMap<HTMLImageElement, HTMLElement>();
+	private readonly placeholders = new WeakMap<HTMLImageElement, Display>();
 	/** Images seen attached to a document at least once. */
 	private readonly connectedOnce = new WeakSet<HTMLImageElement>();
 	/** Never-attached images found detached by the previous sweep. */
@@ -36,6 +37,7 @@ export class ImageReplacer {
 	constructor(
 		private readonly source: () => LeaseSource,
 		private readonly renderPlaceholder: PlaceholderRenderer,
+		private readonly renderOther: ContentRenderer = contentRenderer(),
 	) {}
 
 	/** Handles every image in a newly added or rendered subtree. */
@@ -69,22 +71,38 @@ export class ImageReplacer {
 			return true;
 		};
 		lease.result.then(
-			(image) => {
+			(shown) => {
 				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
-				this.ownSrc.set(img, image.url);
-				img.setAttribute('src', image.url);
+				// An image and an SVG are drawn by the img; text, a PDF and information go right after it (7-7).
+				if (!('kind' in shown) || shown.kind === 'svg') {
+					this.ownSrc.set(img, shown.url);
+					img.setAttribute('src', shown.url);
+					return;
+				}
+				this.insertAfter(img, this.renderOther(shown, src));
 			},
 			(error: unknown) => {
 				if (!current() || replaced()) return;
 				img.removeClass(LOADING);
 				if (!(error instanceof PreviewError) || error.code === 'aborted') return;
-				const placeholder = this.renderPlaceholder(error, src);
-				img.addClass(HIDDEN);
-				img.insertAdjacentElement('afterend', placeholder);
-				this.placeholders.set(img, placeholder);
+				this.insertAfter(img, { el: this.renderPlaceholder(error, src) });
 			},
 		);
+	}
+
+	/**
+	 * Puts a display right after the hidden img. Its right-click never reaches the editor's image menu around it,
+	 * whose items act on the `s3-bridge:` URL itself (copy fetches it) or on the note (remove).
+	 */
+	private insertAfter(img: HTMLImageElement, display: Display): void {
+		display.el.addEventListener('contextmenu', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		});
+		img.addClass(HIDDEN);
+		img.insertAdjacentElement('afterend', display.el);
+		this.placeholders.set(img, display);
 	}
 
 	/**
@@ -96,8 +114,11 @@ export class ImageReplacer {
 		this.leases.get(img)?.release();
 		this.leases.delete(img);
 		this.ownSrc.delete(img);
-		this.placeholders.get(img)?.remove();
+		const display = this.placeholders.get(img);
 		this.placeholders.delete(img);
+		display?.el.remove();
+		// A PDF's document, canvases and pixels go with it (7-7).
+		display?.dispose?.();
 		img.removeClass(LOADING);
 		img.removeClass(HIDDEN);
 		if (ours) img.removeAttribute('src');
