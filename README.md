@@ -122,7 +122,7 @@ A public URL reveals the key, so the settings warn when a public template uses `
 - If metadata cannot be removed, the image is not uploaded. The original bytes are never sent as a fallback.
 - **Convert to WebP when smaller**: when an image is re-encoded, a WebP version is also made and the smaller one is sent.
 - Images over 40 megapixels, and images whose size cannot be read from the header, are not uploaded.
-- **Maximum image size for uploads** applies to each image; images beyond **Maximum total per run** are left for the next run.
+- **Maximum image size for uploads** applies to each image; converted images are kept in memory until they are sent, so images beyond **Maximum total of images per run** are left for the next run (other files are not counted).
 - Content-Type is set from the bytes that are sent. The plugin sets no ACL and no Cache-Control.
 
 Files that are not images are sent as they are, never converted, with a fixed Content-Type chosen from their content (`text/plain; charset=utf-8` for text). **Maximum size of other files for uploads** applies to each of them; a file is read whole into memory for a single request. An upload has no limit on its total time. While the file is being sent, it stops if the network takes no data for the request timeout set in **Network**; otherwise only when you stop it from the progress notice.

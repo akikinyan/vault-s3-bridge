@@ -129,7 +129,7 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 					{ name: t('settings.maxFileMB'), control: { type: 'number', key: 'maxFileMB', min: 1, max: 200, step: 1 } },
 					{ name: t('settings.maxPdfMB'), control: { type: 'number', key: 'maxPdfMB', ...PREVIEW_BOUNDS.maxPdfMB, step: 1 } },
 					{ name: t('settings.maxTextMB'), control: { type: 'number', key: 'maxTextMB', ...PREVIEW_BOUNDS.maxTextMB, step: 1 } },
-					{ name: t('settings.maxMegapixels'), control: { type: 'number', key: 'maxMegapixels', min: 1, max: 500, step: 1 } },
+					{ name: t('settings.maxMegapixels'), desc: t('settings.maxMegapixelsDesc'), control: { type: 'number', key: 'maxMegapixels', min: 1, max: 500, step: 1 } },
 					{ name: t('settings.cacheMB'), desc: t('settings.cacheDesc'), control: { type: 'number', key: 'cacheMB', min: 0, max: 2000, step: 10 } },
 				],
 			},
