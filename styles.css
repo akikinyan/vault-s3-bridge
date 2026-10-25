@@ -139,3 +139,49 @@ img.vault-s3-bridge-loading {
 	color: var(--text-muted);
 	font-size: var(--font-smaller);
 }
+
+/* Upload confirmation screen */
+.vault-s3-bridge-upload-heading {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	margin: var(--size-4-4) 0 var(--size-4-2);
+}
+
+.vault-s3-bridge-upload-heading:first-child {
+	margin-top: 0;
+}
+
+.vault-s3-bridge-upload-row {
+	padding: var(--size-4-2) var(--size-4-3);
+	margin-bottom: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+.vault-s3-bridge-upload-path {
+	font-weight: var(--font-semibold);
+	word-break: break-all;
+}
+
+.vault-s3-bridge-upload code {
+	font-size: var(--font-ui-smaller);
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.vault-s3-bridge-upload-markdown {
+	margin-top: var(--size-2-2);
+}
+
+.vault-s3-bridge-upload-footer {
+	position: sticky;
+	bottom: 0;
+	margin-top: var(--size-4-4);
+	padding-top: var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+	background-color: var(--background-primary);
+}
+
+.vault-s3-bridge-upload-footer .modal-button-container {
+	flex-wrap: wrap;
+}
