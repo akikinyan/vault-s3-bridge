@@ -34,6 +34,8 @@ function describeTarget(target: string): string {
 export class VaultS3BridgeSettingTab extends PluginSettingTab {
 	/** Record files of other devices, read when the tab is shown (7-5). */
 	private others: OtherDeviceFile[] = [];
+	/** Reads the system proxy into its row again; set while the row is shown. */
+	private refreshSystemProxy: (() => void) | undefined;
 
 	constructor(
 		app: App,
@@ -297,17 +299,21 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 			visible: this.plugin.settings.network.proxyMode === 'system',
 			render: (setting) => {
 				let shown = true;
+				// The row may be rendered while hidden: scutil runs only in the system mode.
 				const refresh = () => {
+					if (!shown || this.plugin.settings.network.proxyMode !== 'system') return;
 					setting.setDesc(t('settings.systemProxy.checking'));
 					void readSystemProxy().then((p) => {
 						if (shown) setting.setDesc(`${t('settings.systemProxyDesc')} ${describe(p)}`);
 					});
 				};
 				setting.setName(t('settings.systemProxy'));
+				this.refreshSystemProxy = refresh;
 				refresh();
 				setting.addButton((b) => b.setButtonText(t('settings.systemProxy.reload')).onClick(refresh));
 				return () => {
 					shown = false;
+					if (this.refreshSystemProxy === refresh) this.refreshSystemProxy = undefined;
 				};
 			},
 		};
@@ -415,6 +421,8 @@ export class VaultS3BridgeSettingTab extends PluginSettingTab {
 			case 'proxyMode':
 				this.plugin.scheduleRecreatePreview();
 				this.update();
+				// update() does not redraw the description of a row already shown.
+				this.refreshSystemProxy?.();
 				return;
 			case 'proxyUrl':
 			case 'noProxy':
