@@ -438,6 +438,19 @@ describe('runJob (10-1 steps 6 to 8)', () => {
 		expect(v.pending.items).toEqual([]);
 	});
 
+	it('a note renamed or moved while uploading is not written: the Markdown is copied', async () => {
+		const note = '![[a.png]] and ![[b.png]]';
+		const w = await world([priv, pub], note);
+		const ed = new FakeEditor(note);
+		w.editors.push(ed);
+		w.run = { ...w.run, note: { ...w.run.note, identity: () => 'moved' } };
+		const r = await runJob(await plan(w, note), confirm(w, priv), w.run);
+		expect(r.link).toEqual({ kind: 'copied', ok: true, fallback: { applied: false, reason: 'moved' } });
+		expect(ed.transactions).toBe(0);
+		expect(w.copied).toEqual(['![a](s3-bridge://work/k/a.png)\n![b](s3-bridge://work/k/b.png)']);
+		expect(w.pending.items).toEqual([]);
+	});
+
 	it('copy chosen: the note is not touched; a failed copy keeps the records as delivered', async () => {
 		const note = '![[a.png]]';
 		const w = await world([priv, pub], note);

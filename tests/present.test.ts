@@ -152,6 +152,11 @@ describe('resultLines', () => {
 		expect(keys(r)).toEqual(['upload.result.uploadedForCopy:1', 'upload.result.fallbackChanged', 'upload.result.copied']);
 	});
 
+	it('a renamed or moved note: its own reason before the copy', () => {
+		const r: JobResult = { files: [fr('delivered', true)], link: { kind: 'copied', ok: true, fallback: { applied: false, reason: 'moved' } } };
+		expect(keys(r)).toEqual(['upload.result.uploadedForCopy:1', 'upload.result.fallbackMoved', 'upload.result.copied']);
+	});
+
 	it('says why files did not go through, per outcome, and keeps unknown reasons out', () => {
 		const why = (outcome: FileResult['outcome'], reason?: string): FileResult => ({ ...fr(outcome), ...(reason ? { reason } : {}) });
 		const r: JobResult = {
