@@ -14,7 +14,7 @@ const result = await esbuild.build({
 	format: 'cjs',
 	target: 'es2021',
 	treeShaking: true,
-	minify: true,
+	minify: false,
 	write: false,
 	metafile: true,
 	outfile: 'main.js',

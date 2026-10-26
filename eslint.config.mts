@@ -8,6 +8,9 @@ export default defineConfig(
 		'dist',
 		'local',
 		'dev-vault',
+		// Separate checkouts and generated analysis output are not this project's sources.
+		'.claude/worktrees/**',
+		'graphify-out/**',
 		// Byte fixtures for the format classifier: data, not code.
 		'tests/fixtures/files',
 		'esbuild.config.mjs',

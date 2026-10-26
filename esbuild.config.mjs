@@ -47,7 +47,8 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : 'inline',
 	treeShaking: true,
 	outfile: 'main.js',
-	minify: prod,
+	// Keep distributed code readable for community review.
+	minify: false,
 	// Read by scripts/check-bundle.mjs: which source files import which modules.
 	metafile: prod,
 });
