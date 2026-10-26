@@ -4,7 +4,7 @@
 
 Manage Obsidian attachments on AWS S3. Upload files linked from a note, replace their links or copy the generated Markdown, and preview private files inside Obsidian.
 
-> Preview release (0.1.0). Not yet reviewed by Obsidian. Settings and behaviour may change between versions. Keep backups of your vault.
+> Preview release (0.1.1). Not yet reviewed by Obsidian. Settings and behaviour may change between versions. Keep backups of your vault.
 
 ## Features
 
@@ -29,13 +29,23 @@ flowchart LR
 
 | Component | Supported in this preview |
 |---|---|
-| Obsidian | Desktop 1.14.4 or later; tested on macOS |
+| Obsidian | Desktop 1.14.4 or later; tested on macOS with Obsidian 1.14.5 |
 | Storage | AWS S3 general purpose buckets with SSE-S3 or SSE-KMS |
 | Authentication | IAM Identity Center (SSO) profiles |
 | S3-compatible storage | Not supported yet; custom endpoint settings are untested |
 | Other credentials | Static access keys, role assumption, credential processes and web identity are not supported |
 
 See [configuration and AWS access](docs/configuration.md) for permissions, settings and proxy support.
+
+## External services and file access
+
+- **Account and costs**: you need access to an AWS account with IAM Identity Center (SSO), a configured SSO profile and permissions for the target S3 bucket. The plugin is free; AWS storage, requests, data transfer and any delivery services you use may incur charges.
+- **Network**: the plugin contacts AWS S3 to upload and retrieve attachments, STS to check the authenticated identity, and IAM Identity Center / SSO-OIDC to obtain temporary role credentials and refresh SSO tokens. If you configure a custom S3 endpoint, S3 requests go to that endpoint; S3-compatible storage is not supported in this preview. Requests use the configured direct or proxy connection. Public links use your configured CDN / HTTPS delivery service when opened or rendered.
+- **Files outside the vault**: the AWS SDK reads shared AWS configuration and credentials files (normally `~/.aws/config` and `~/.aws/credentials`) and the SSO token cache (`~/.aws/sso/cache`) for authentication. The SDK can update that cache when refreshing an SSO token. AWS configuration file locations can be overridden by `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`.
+- **Credentials**: temporary IAM role credentials are held in memory, not saved in plugin settings. SSO access and refresh tokens can be stored in the AWS SDK's local cache outside the vault. The plugin does not log these secrets.
+- **Processes**: when using the system proxy on macOS, the plugin runs `/usr/sbin/scutil --proxy` with fixed arguments and no shell to read the proxy settings.
+
+See [privacy, access and protection limits](docs/security.md#what-the-plugin-accesses) for details, including access to files inside the vault.
 
 ## Installation and setup
 
