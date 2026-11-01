@@ -4,7 +4,7 @@
 
 Manage Obsidian attachments on AWS S3. Upload files linked from a note, replace their links or copy the generated Markdown, and preview private files inside Obsidian.
 
-> Preview release (0.1.2). Not yet reviewed by Obsidian. Settings and behaviour may change between versions. Keep backups of your vault.
+> Preview release (0.1.2). Settings and behaviour may change between versions. Keep backups of your vault.
 
 ## Features
 
@@ -14,16 +14,12 @@ Manage Obsidian attachments on AWS S3. Upload files linked from a note, replace 
 - Review uploads before sending, resume interrupted uploads, and archive uploaded originals.
 - Prevent recorded private buckets and identical private content from being used for public uploads, within the [documented limits](docs/security.md#limits-of-the-protection).
 
-```mermaid
-flowchart LR
-    Note["Obsidian note and attachments"] --> Review["Review and upload"]
-    Review --> Private["Private S3 storage"]
-    Review --> Public["S3 storage for public delivery"]
-    Private --> Ref["s3-bridge reference"]
-    Ref --> Preview["Authenticated preview in Obsidian"]
-    Public --> CDN["Configured CDN / HTTPS URL"]
-    CDN --> Link["Public link in the note"]
-```
+After you review the attachments in a note, each upload follows one of two paths:
+
+| Destination | What the note gets | How it is shown |
+|---|---|---|
+| Private S3 storage | An `s3-bridge://` reference | Previewed inside Obsidian after authentication |
+| S3 storage for public delivery | A public link through your configured CDN / HTTPS URL | Opened or rendered like any other HTTPS link |
 
 ## Requirements
 
@@ -49,11 +45,9 @@ See [privacy, access and protection limits](docs/security.md#what-the-plugin-acc
 
 ## Installation and setup
 
-The plugin is not yet in Obsidian's community plugin list. Install it from a GitHub release using either method.
-
 | Method | Steps |
 |---|---|
-| [BRAT](https://github.com/TfTHacker/obsidian42-brat) | Add this repository as a beta plugin. |
+| Community plugins | Open **Settings → Community plugins → Browse**, search for **Vault S3 Bridge**, then install and enable it. |
 | Manual | Download `main.js`, `manifest.json` and `styles.css` from the latest release into `<vault>/.obsidian/plugins/vault-bucket-bridge/`, then enable **Vault S3 Bridge** under **Settings → Community plugins**. |
 
 1. Sign in with your configured SSO profile.
