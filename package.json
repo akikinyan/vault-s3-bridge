@@ -1,6 +1,6 @@
 {
-	"name": "vault-s3-bridge",
-	"version": "0.1.1",
+	"name": "vault-bucket-bridge",
+	"version": "0.1.2",
 	"description": "Manage attachments on AWS S3, with IAM Identity Center authentication and private previews.",
 	"main": "main.js",
 	"type": "module",

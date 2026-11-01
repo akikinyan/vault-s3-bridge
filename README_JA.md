@@ -4,7 +4,7 @@
 
 Obsidian の添付ファイルを AWS S3 で管理するプラグインです。ノートから参照するファイルをアップロードし、リンクを置き換えるか、生成した Markdown をコピーできます。非公開ファイルは Obsidian 内でプレビューできます。
 
-> プレビュー版 0.1.1 です。Obsidian の審査は受けていません。バージョンによって設定や動作が変わる場合があります。Vault のバックアップを保管してください。
+> プレビュー版 0.1.2 です。Obsidian の審査は受けていません。バージョンによって設定や動作が変わる場合があります。Vault のバックアップを保管してください。
 
 ## 主な機能
 
@@ -54,7 +54,7 @@ Obsidian のコミュニティプラグイン一覧には未登録です。GitHu
 | 方法 | 手順 |
 |---|---|
 | [BRAT](https://github.com/TfTHacker/obsidian42-brat) | このリポジトリをベータプラグインとして追加します。 |
-| 手動 | 最新リリースの `main.js`、`manifest.json`、`styles.css` を `<vault>/.obsidian/plugins/vault-s3-bridge/` に配置し、「設定 → コミュニティプラグイン」で Vault S3 Bridge を有効にします。 |
+| 手動 | 最新リリースの `main.js`、`manifest.json`、`styles.css` を `<vault>/.obsidian/plugins/vault-bucket-bridge/` に配置し、「設定 → コミュニティプラグイン」で Vault S3 Bridge を有効にします。 |
 
 1. 設定済みの SSO プロファイルでログインしてください。
 
