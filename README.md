@@ -54,7 +54,7 @@ The plugin is not yet in Obsidian's community plugin list. Install it from a Git
 | Method | Steps |
 |---|---|
 | [BRAT](https://github.com/TfTHacker/obsidian42-brat) | Add this repository as a beta plugin. |
-| Manual | Download `main.js`, `manifest.json` and `styles.css` from the latest release into `<vault>/.obsidian/plugins/vault-s3-bridge/`, then enable **Vault S3 Bridge** under **Settings → Community plugins**. |
+| Manual | Download `main.js`, `manifest.json` and `styles.css` from the latest release into `<vault>/.obsidian/plugins/vault-bucket-bridge/`, then enable **Vault S3 Bridge** under **Settings → Community plugins**. |
 
 1. Sign in with your configured SSO profile.
 

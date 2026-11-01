@@ -35,7 +35,7 @@ Before each file is sent, the plugin writes a record to its folder (`pending-<de
 
 ## Syncing the vault with Git or another tool
 
-The plugin writes these files to `.obsidian/plugins/vault-s3-bridge/`:
+The plugin writes these files to `.obsidian/plugins/vault-bucket-bridge/`:
 
 | File | Content | Share between devices |
 |---|---|---|

@@ -1,5 +1,5 @@
 {
-	"id": "vault-s3-bridge",
+	"id": "vault-bucket-bridge",
 	"name": "Vault S3 Bridge",
 	"version": "0.1.1",
 	"minAppVersion": "1.14.4",
