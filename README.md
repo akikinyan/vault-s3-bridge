@@ -4,7 +4,7 @@
 
 Manage Obsidian attachments on AWS S3. Upload files linked from a note, replace their links or copy the generated Markdown, and preview private files inside Obsidian.
 
-> Preview release (0.1.1). Not yet reviewed by Obsidian. Settings and behaviour may change between versions. Keep backups of your vault.
+> Preview release (0.1.2). Not yet reviewed by Obsidian. Settings and behaviour may change between versions. Keep backups of your vault.
 
 ## Features
 
