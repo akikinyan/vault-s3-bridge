@@ -63,6 +63,8 @@ export type SkipReason =
 	| 'markdown-check'
 	/** Design 5-4: the file is in the archive folder; it has to be moved back first. */
 	| 'in-archive'
+	/** 8-1: the file is in an excluded folder. */
+	| 'excluded-folder'
 	/** Design 5-3: a reference-style definition `[id]: p` of an attachment; it is not rewritten (D18). */
 	| 'reference-style'
 	/** Design 6-2: the alt text of `![t](p)` holds Markdown escapes, which a link text would show. */
@@ -319,6 +321,10 @@ export async function prepareJob(input: PrepareInput, deps: PrepareDeps): Promis
 		if (phase4 && isNoteFile(file.path)) continue;
 		if (phase4 && file.path.startsWith(`${ARCHIVE_FOLDER}/`)) {
 			skip(embed, 'in-archive');
+			continue;
+		}
+		if (inExcludedFolder(file.path, upload.excludeFolders)) {
+			skip(embed, 'excluded-folder');
 			continue;
 		}
 		const known = byPath.get(file.path);

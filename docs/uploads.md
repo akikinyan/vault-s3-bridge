@@ -51,7 +51,7 @@ Generated links:
 
 A link stays a link and an image embed stays an embed. Inside tables, `|` is escaped as `\|`. Reference-style definitions (`[id]: doc.pdf`) are listed but not rewritten.
 
-**Not uploaded** (the reason is shown): external URLs and existing `s3-bridge://` references, embeds in comments, code or front matter, links to a heading or block, links with a title, files that are not found or cannot be read, images that cannot be decoded, files over the size or pixel limits, archived files, and notes in an excluded folder. When the plugin cannot read a part of the note safely, it stops instead of guessing: for example, a comment containing inline code with `%%` in it. It also stops when the embeds and links it found differ from Obsidian's own index of the note, even where an earlier version would have uploaded the images.
+**Not uploaded** (the reason is shown): external URLs and existing `s3-bridge://` references, embeds in comments, code or front matter, links to a heading or block, links with a title, files that are not found or cannot be read, images that cannot be decoded, files over the size or pixel limits, archived files, files in an excluded folder, and notes in an excluded folder. When the plugin cannot read a part of the note safely, it stops instead of guessing: for example, a comment containing inline code with `%%` in it. It also stops when the embeds and links it found differ from Obsidian's own index of the note, even where an earlier version would have uploaded the images.
 
 The same file is uploaded once per run, and a file uploaded before (within the upload history) is reused after its checksum is confirmed on the storage.
 
