@@ -44,7 +44,7 @@ Sizes labelled MB are calculated using 1,048,576 bytes. Upload and preview limit
 | Maximum image size for uploads | 20 MB per image |
 | Maximum size of other files for uploads | 100 MB per file |
 | Maximum total of images per run | 200 MB; other files are not counted |
-| Excluded note folders | None |
+| Excluded folders (notes and attachments) | None |
 | Upload history limit | 2,000 entries |
 | Preview image / PDF / text size | 20 / 50 / 5 MB |
 | Preview image pixel limit | 40 megapixels |

@@ -912,6 +912,22 @@ describe('uploadCommand (10-1)', () => {
 		expect(failing.lock.busy).toBe(false);
 	});
 
+	it('an attachment in an excluded folder is listed, not uploaded; the others still are', async () => {
+		const w = await world();
+		await w.settings.mutate((d) => {
+			d.upload.excludeFolders = ['img/sub'];
+			return { ok: true, value: undefined };
+		});
+		const resolve = w.prep.resolveLink;
+		w.prep = { ...w.prep, resolveLink: (p) => (p === 'icon.png' ? { ...resolve('a.png')!, path: 'img/sub/icon.png' } : resolve(p)) };
+		const p = await plan(w, '![[icon.png]] ![[a.png]] ![[icon.png|32]]');
+		expect(p.skipped.map((s) => [s.original, s.reason])).toEqual([
+			['![[icon.png]]', 'excluded-folder'],
+			['![[icon.png|32]]', 'excluded-folder'],
+		]);
+		expect(p.groups.flatMap((g) => g.files.map((f) => f.sourcePath))).toEqual(['img/a.png']);
+	});
+
 	it('a note in an excluded folder is not uploaded from, nor previewed', async () => {
 		const w = await world([priv, pub], '![[a.png]]');
 		await w.settings.mutate((d) => {
